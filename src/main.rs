@@ -4,7 +4,9 @@ use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::net::{TcpListener, TcpStream};
 use std::str::{self, Chars};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Eq, Hash, PartialEq, Clone)]
 enum RespDataType {
@@ -71,7 +73,7 @@ impl CommandExecutor {
         &mut self,
         commands: &mut RespDataType,
         stream: &mut TcpStream,
-        state: &mut HashMap<RespDataType, RespDataType>,
+        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
     ) {
         match commands {
             RespDataType::Array(v) => self.handle_commands(v, stream, state),
@@ -83,11 +85,11 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
-        state: &mut HashMap<RespDataType, RespDataType>,
+        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
     ) {
         let first_command = &commands[0];
         match first_command {
-            RespDataType::BulkString(bulk_str) => match bulk_str.as_str() {
+            RespDataType::BulkString(bulk_str) => match bulk_str.to_uppercase().as_str() {
                 "PING" => {
                     self.ping_command(commands, stream);
                 }
@@ -118,7 +120,7 @@ impl CommandExecutor {
         }
     }
 
-    fn ping_command(&mut self, commands: &mut Vec<RespDataType>, stream: &mut TcpStream) {
+    fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {
         stream.write_all(b"+PONG\r\n").unwrap();
     }
 
@@ -126,28 +128,62 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
-        state: &mut HashMap<RespDataType, RespDataType>,
+        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
     ) {
         let (key, value) = (commands[1].clone(), commands[2].clone());
-        state.insert(key, value);
-        stream.write_all(b"+OK\r\n");
+        let mut hashmap_value = ExpiringValue {
+            value,
+            created_at: Instant::now(),
+            last_accessed: Instant::now(),
+            expiration_as_miliseconds: None,
+        };
+        let mut options: Option<&[RespDataType]> = None;
+        if commands.len() > 3 {
+            options = Some(&commands[3..]);
+        }
+        if let Some(op) = options {
+            let RespDataType::BulkString(option_type) = &op[0] else {
+                unreachable!("protocol invariant violated: expected BulkString");
+            };
+
+            match option_type.to_uppercase().as_str() {
+                "PX" => {
+                    let RespDataType::BulkString(option_value) = &op[1] else {
+                        unreachable!("protocol invariant violated: expected BulkString");
+                    };
+                    hashmap_value.expiration_as_miliseconds =
+                        Some(option_value.parse::<u128>().unwrap());
+                }
+                _ => {}
+            }
+        }
+
+        let mut state_guard = state.lock().unwrap();
+        state_guard.insert(key, hashmap_value);
+        stream.write_all(b"+OK\r\n").unwrap();
     }
     fn get_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
-        state: &mut HashMap<RespDataType, RespDataType>,
+        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
     ) {
         let key = commands[1].clone();
-        let value = state.get(&key);
+        let state_guard = state.lock().unwrap();
+        let value = state_guard.get(&key);
         match value {
-            Some(v) => match v {
-                RespDataType::BulkString(v) => {
-                    let bulk_response = self.convert_bulk_string_to_resp(v);
-                    stream.write_all(bulk_response.as_bytes()).unwrap();
+            Some(v) => {
+                if let Some(exp) = v.expiration_as_miliseconds {
+                    if v.created_at.elapsed().as_millis() > exp {
+                        return stream.write_all(b"$-1\r\n").unwrap();
+                    }
                 }
-                _ => {}
-            },
+                let RespDataType::BulkString(value) = &v.value else {
+                    unreachable!("protocol invariant violated: expected BulkString");
+                };
+                let bulk_response = self.convert_bulk_string_to_resp(&value);
+                return stream.write_all(bulk_response.as_bytes()).unwrap();
+            }
             None => stream.write_all(b"$-1\r\n").unwrap(),
         }
     }
@@ -163,17 +199,27 @@ impl CommandExecutor {
     }
 }
 
+struct ExpiringValue {
+    value: RespDataType,
+    created_at: Instant,
+    last_accessed: Instant,
+    expiration_as_miliseconds: Option<u128>,
+}
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
-    fn handle_connection(stream: &mut TcpStream) {
+    let mut shared_state = Arc::new(Mutex::new(HashMap::new()));
+
+    fn handle_connection(
+        stream: &mut TcpStream,
+        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
+    ) {
         let mut parser = Parser {};
         let mut executor = CommandExecutor {};
-        let mut state: HashMap<RespDataType, RespDataType> = HashMap::new();
-
         loop {
             let mut buf = [0; 512];
             let buffer_size = stream.read(&mut buf).unwrap();
@@ -183,7 +229,7 @@ fn main() {
             match str::from_utf8(&mut buf) {
                 Ok(str) => {
                     let mut commands = parser.parse(str);
-                    executor.execute(&mut commands, stream, &mut state);
+                    executor.execute(&mut commands, stream, Arc::clone(&state));
                 }
                 Err(err) => {
                     panic!("Error converting");
@@ -195,7 +241,8 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                let _ = thread::spawn(move || handle_connection(&mut stream));
+                let mut state_clone = Arc::clone(&shared_state);
+                let _ = thread::spawn(move || handle_connection(&mut stream, state_clone));
             }
             Err(e) => {
                 println!("error: {}", e);
