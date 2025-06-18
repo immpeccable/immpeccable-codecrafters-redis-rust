@@ -1,10 +1,12 @@
 #![allow(unused_imports)]
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::net::{TcpListener, TcpStream};
 use std::str::{self, Chars};
 use std::thread;
 
+#[derive(Eq, Hash, PartialEq, Clone)]
 enum RespDataType {
     SimpleString(String),
     SimpleError(String),
@@ -13,7 +15,7 @@ enum RespDataType {
     BulkString(String),
     Nil,
     Boolean(bool),
-    Double(f32),
+    // Double(f32),
 }
 
 struct Parser {}
@@ -65,14 +67,24 @@ impl Parser {
 struct CommandExecutor {}
 
 impl CommandExecutor {
-    fn execute(&mut self, commands: &mut RespDataType, stream: &mut TcpStream) {
+    fn execute(
+        &mut self,
+        commands: &mut RespDataType,
+        stream: &mut TcpStream,
+        state: &mut HashMap<RespDataType, RespDataType>,
+    ) {
         match commands {
-            RespDataType::Array(v) => self.handle_commands(v, stream),
+            RespDataType::Array(v) => self.handle_commands(v, stream, state),
             _ => unreachable!("shouldn't be else "),
         }
     }
 
-    fn handle_commands(&mut self, commands: &mut Vec<RespDataType>, stream: &mut TcpStream) {
+    fn handle_commands(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: &mut HashMap<RespDataType, RespDataType>,
+    ) {
         let first_command = &commands[0];
         match first_command {
             RespDataType::BulkString(bulk_str) => match bulk_str.as_str() {
@@ -81,6 +93,12 @@ impl CommandExecutor {
                 }
                 "ECHO" => {
                     self.echo_command(commands, stream);
+                }
+                "SET" => {
+                    self.set_command(commands, stream, state);
+                }
+                "GET" => {
+                    self.get_command(commands, stream, state);
                 }
                 _ => {}
             },
@@ -104,8 +122,43 @@ impl CommandExecutor {
         stream.write_all(b"+PONG\r\n").unwrap();
     }
 
+    fn set_command(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: &mut HashMap<RespDataType, RespDataType>,
+    ) {
+        let (key, value) = (commands[1].clone(), commands[2].clone());
+        state.insert(key, value);
+        stream.write_all(b"+OK\r\n");
+    }
+    fn get_command(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: &mut HashMap<RespDataType, RespDataType>,
+    ) {
+        let key = commands[1].clone();
+        let value = state.get(&key);
+        match value {
+            Some(v) => match v {
+                RespDataType::BulkString(v) => {
+                    let bulk_response = self.convert_bulk_string_to_resp(v);
+                    stream.write_all(bulk_response.as_bytes()).unwrap();
+                }
+                _ => {}
+            },
+            None => stream.write_all(b"$-1\r\n").unwrap(),
+        }
+    }
+
     fn convert_simple_string_to_resp(&mut self, input: &String) -> String {
         let res = format!("+{}\r\n", input);
+        return res;
+    }
+
+    fn convert_bulk_string_to_resp(&mut self, input: &String) -> String {
+        let res = format!("${}\r\n{}\r\n", input.len(), input);
         return res;
     }
 }
@@ -119,6 +172,7 @@ fn main() {
     fn handle_connection(stream: &mut TcpStream) {
         let mut parser = Parser {};
         let mut executor = CommandExecutor {};
+        let mut state: HashMap<RespDataType, RespDataType> = HashMap::new();
 
         loop {
             let mut buf = [0; 512];
@@ -129,7 +183,7 @@ fn main() {
             match str::from_utf8(&mut buf) {
                 Ok(str) => {
                     let mut commands = parser.parse(str);
-                    executor.execute(&mut commands, stream);
+                    executor.execute(&mut commands, stream, &mut state);
                 }
                 Err(err) => {
                     panic!("Error converting");
