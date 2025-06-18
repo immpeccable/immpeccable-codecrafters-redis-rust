@@ -1,12 +1,13 @@
 #![allow(unused_imports)]
+use core::panic;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::net::{TcpListener, TcpStream};
 use std::str::{self, Chars};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, thread};
 
 #[derive(Eq, Hash, PartialEq, Clone)]
 enum RespDataType {
@@ -69,12 +70,7 @@ impl Parser {
 struct CommandExecutor {}
 
 impl CommandExecutor {
-    fn execute(
-        &mut self,
-        commands: &mut RespDataType,
-        stream: &mut TcpStream,
-        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
-    ) {
+    fn execute(&mut self, commands: &mut RespDataType, stream: &mut TcpStream, state: State) {
         match commands {
             RespDataType::Array(v) => self.handle_commands(v, stream, state),
             _ => unreachable!("shouldn't be else "),
@@ -85,7 +81,7 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
-        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
+        state: State,
     ) {
         let first_command = &commands[0];
         match first_command {
@@ -101,6 +97,14 @@ impl CommandExecutor {
                 }
                 "GET" => {
                     self.get_command(commands, stream, state);
+                }
+                "CONFIG" => {
+                    if let RespDataType::BulkString(bulk_config_second_string) = &commands[1] {
+                        match bulk_config_second_string.as_str() {
+                            "GET" => self.config_get_command(commands, stream, state),
+                            _ => {}
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -124,11 +128,51 @@ impl CommandExecutor {
         stream.write_all(b"+PONG\r\n").unwrap();
     }
 
+    fn config_get_command(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: State,
+    ) {
+        let mut config_key = &commands[2];
+        if let RespDataType::BulkString(config_key) = config_key {
+            match config_key.to_uppercase().as_str() {
+                "DIR" => {
+                    if let Some(db_dir) = state.db_dir {
+                        let response = format!(
+                            "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
+                            config_key.len(),
+                            config_key,
+                            db_dir.len(),
+                            db_dir
+                        );
+                        stream.write_all(response.as_bytes()).unwrap();
+                    }
+                }
+                "DBFILENAME" => {
+                    if let Some(db_file_name) = state.db_file_name {
+                        let response = format!(
+                            "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
+                            config_key.len(),
+                            config_key,
+                            db_file_name.len(),
+                            db_file_name
+                        );
+                        stream.write_all(response.as_bytes()).unwrap();
+                    }
+                }
+                _ => {
+                    panic!("unknown config item")
+                }
+            }
+        }
+    }
+
     fn set_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
-        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
+        state: State,
     ) {
         let (key, value) = (commands[1].clone(), commands[2].clone());
         let mut hashmap_value = ExpiringValue {
@@ -158,7 +202,7 @@ impl CommandExecutor {
             }
         }
 
-        let mut state_guard = state.lock().unwrap();
+        let mut state_guard = state.shared_data.lock().unwrap();
         state_guard.insert(key, hashmap_value);
         stream.write_all(b"+OK\r\n").unwrap();
     }
@@ -166,10 +210,10 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
-        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
+        state: State,
     ) {
         let key = commands[1].clone();
-        let state_guard = state.lock().unwrap();
+        let state_guard = state.shared_data.lock().unwrap();
         let value = state_guard.get(&key);
         match value {
             Some(v) => {
@@ -206,18 +250,32 @@ struct ExpiringValue {
     expiration_as_miliseconds: Option<u128>,
 }
 
+#[derive(Clone)]
+struct State {
+    pub db_file_name: Option<String>,
+    pub db_dir: Option<String>,
+    pub shared_data: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
+}
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let args: Vec<String> = env::args().collect();
+    let shared_state = Arc::new(Mutex::new(HashMap::new()));
+    let mut state = State {
+        shared_data: shared_state,
+        db_dir: None,
+        db_file_name: None,
+    };
 
-    let mut shared_state = Arc::new(Mutex::new(HashMap::new()));
+    if args.len() > 1 {
+        state.db_dir = Some(args[2].clone());
+        state.db_file_name = Some(args[4].clone());
+    }
 
-    fn handle_connection(
-        stream: &mut TcpStream,
-        state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
-    ) {
+    fn handle_connection(stream: &mut TcpStream, state: State) {
         let mut parser = Parser {};
         let mut executor = CommandExecutor {};
         loop {
@@ -229,9 +287,9 @@ fn main() {
             match str::from_utf8(&mut buf) {
                 Ok(str) => {
                     let mut commands = parser.parse(str);
-                    executor.execute(&mut commands, stream, Arc::clone(&state));
+                    executor.execute(&mut commands, stream, state.clone());
                 }
-                Err(err) => {
+                Err(_) => {
                     panic!("Error converting");
                 }
             }
@@ -241,8 +299,8 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                let mut state_clone = Arc::clone(&shared_state);
-                let _ = thread::spawn(move || handle_connection(&mut stream, state_clone));
+                let state_cloned = state.clone();
+                let _ = thread::spawn(move || handle_connection(&mut stream, state_cloned));
             }
             Err(e) => {
                 println!("error: {}", e);
