@@ -211,7 +211,7 @@ impl CommandExecutor {
         stream
             .write_all(
                 &self
-                    .convert_bulk_string_to_resp(&String::from("role:master"))
+                    .convert_bulk_string_to_resp(&String::from(format!("role:{}", state.role)))
                     .as_bytes(),
             )
             .unwrap();

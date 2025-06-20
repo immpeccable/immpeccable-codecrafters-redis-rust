@@ -27,6 +27,7 @@ fn main() {
         shared_data: shared_state,
         db_dir: None,
         db_file_name: None,
+        role: String::from("master"),
     };
     let mut i = 1;
     let mut args_map: HashMap<String, String> = HashMap::new();
@@ -47,6 +48,11 @@ fn main() {
     if let (Some(_), Some(_)) = (&state.db_dir, &state.db_file_name) {
         let _ = Db {}.load(state.clone());
     }
+
+    if let Some(replica_of) = args_map.get(&"--replicaof".to_string()) {
+        state.role = String::from("slave");
+    }
+
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
 
     fn handle_connection(stream: &mut TcpStream, state: State) {
