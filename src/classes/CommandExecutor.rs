@@ -48,6 +48,9 @@ impl CommandExecutor {
                 "KEYS" => {
                     self.keys_command(commands, stream, state);
                 }
+                "INFO" => {
+                    self.info_command(commands, stream, state);
+                }
                 _ => {}
             },
             _ => {}
@@ -197,6 +200,21 @@ impl CommandExecutor {
             }
             stream.write_all(result.as_bytes()).unwrap();
         }
+    }
+
+    fn info_command(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: State,
+    ) {
+        stream
+            .write_all(
+                &self
+                    .convert_bulk_string_to_resp(&String::from("role:master"))
+                    .as_bytes(),
+            )
+            .unwrap();
     }
 
     fn convert_simple_string_to_resp(&mut self, input: &String) -> String {
