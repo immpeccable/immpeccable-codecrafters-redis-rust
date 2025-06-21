@@ -14,6 +14,7 @@ pub struct State {
     pub master_host: Option<String>,
     pub master_port: Option<String>,
     pub master_stream: Option<TcpStream>,
+    pub replicas: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 impl Clone for State {
@@ -29,6 +30,7 @@ impl Clone for State {
                 .master_stream
                 .as_ref()
                 .and_then(|sock| sock.try_clone().ok()),
+            replicas: self.replicas.clone(),
         }
     }
 }

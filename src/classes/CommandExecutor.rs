@@ -59,8 +59,9 @@ impl CommandExecutor {
                 "REPLCONF" => {
                     self.repl_conf_command(stream);
                 }
+
                 "PSYNC" => {
-                    self.psync(stream);
+                    self.psync(stream, state);
                 }
                 _ => {}
             },
@@ -84,7 +85,7 @@ impl CommandExecutor {
         stream.write_all(b"+OK\r\n").unwrap();
     }
 
-    fn psync(&mut self, stream: &mut TcpStream) {
+    fn psync(&mut self, stream: &mut TcpStream, mut state: State) {
         let resp = self.convert_simple_string_to_resp(&String::from(
             "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0",
         ));
@@ -99,6 +100,12 @@ impl CommandExecutor {
                 .concat(),
             )
             .unwrap();
+
+        state
+            .replicas
+            .lock()
+            .unwrap()
+            .push(stream.try_clone().unwrap());
     }
 
     fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {
@@ -182,6 +189,14 @@ impl CommandExecutor {
         let mut state_guard = state.shared_data.lock().unwrap();
         state_guard.insert(key, hashmap_value);
         stream.write_all(b"+OK\r\n").unwrap();
+
+        let state_replica_guard = state.replicas.lock().unwrap();
+
+        for mut client in state_replica_guard.iter() {
+            client
+                .write_all(self.convert_array_to_resp(commands.clone()).as_bytes())
+                .unwrap();
+        }
     }
     fn get_command(
         &mut self,
@@ -256,6 +271,16 @@ impl CommandExecutor {
 
     fn convert_bulk_string_to_resp(&mut self, input: &String) -> String {
         let res = format!("${}\r\n{}\r\n", input.len(), input);
+        return res;
+    }
+
+    fn convert_array_to_resp(&mut self, input: Vec<RespDataType>) -> String {
+        let mut res = format!("*{}\r\n", input.len());
+        for el in input {
+            if let RespDataType::BulkString(el_as_string) = el {
+                res.push_str(&self.convert_bulk_string_to_resp(&el_as_string));
+            }
+        }
         return res;
     }
 }

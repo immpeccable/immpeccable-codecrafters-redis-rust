@@ -31,6 +31,7 @@ fn main() {
         master_host: None,
         master_port: None,
         master_stream: None,
+        replicas: Arc::new(Mutex::new(Vec::new())),
     };
     let mut i = 1;
     let mut args_map: HashMap<String, String> = HashMap::new();
