@@ -51,6 +51,9 @@ impl CommandExecutor {
                 "INFO" => {
                     self.info_command(commands, stream, state);
                 }
+                "REPLCONF" => {
+                    self.repl_conf_command(stream);
+                }
                 _ => {}
             },
             _ => {}
@@ -67,6 +70,10 @@ impl CommandExecutor {
             }
             _ => {}
         }
+    }
+
+    fn repl_conf_command(&mut self, stream: &mut TcpStream) {
+        stream.write_all(b"+OK\r\n").unwrap();
     }
 
     fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {
