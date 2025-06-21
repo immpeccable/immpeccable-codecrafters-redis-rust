@@ -1,4 +1,9 @@
-use crate::classes::{ExpiringValue::ExpiringValue, RespDataType::RespDataType, State::State};
+use crate::classes::{
+    Constants::EMPTY_RDB_HEX_REPRESENTATION, ExpiringValue::ExpiringValue,
+    RespDataType::RespDataType, State::State,
+};
+
+use hex;
 
 use std::{
     io::{BufRead, BufReader, Error, Read, Seek, Write},
@@ -83,8 +88,17 @@ impl CommandExecutor {
         let resp = self.convert_simple_string_to_resp(&String::from(
             "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0",
         ));
-
         stream.write_all(resp.as_bytes()).unwrap();
+        let empty_rdb_as_bytes = hex::decode(EMPTY_RDB_HEX_REPRESENTATION).unwrap();
+        stream
+            .write_all(
+                &[
+                    format!("${}\r\n", empty_rdb_as_bytes.len()).as_bytes(),
+                    &empty_rdb_as_bytes,
+                ]
+                .concat(),
+            )
+            .unwrap();
     }
 
     fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {

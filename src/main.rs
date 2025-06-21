@@ -13,8 +13,8 @@ use std::{env, thread};
 
 mod classes;
 use classes::{
-    CommandExecutor::CommandExecutor, Db::Db, ExpiringValue::ExpiringValue, Parser::Parser,
-    RespDataType::RespDataType, State::State,
+    CommandExecutor::CommandExecutor, Constants::EMPTY_RDB_HEX_REPRESENTATION, Db::Db,
+    ExpiringValue::ExpiringValue, Parser::Parser, RespDataType::RespDataType, State::State,
 };
 
 fn main() {
