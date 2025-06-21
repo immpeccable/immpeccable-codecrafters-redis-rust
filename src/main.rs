@@ -88,6 +88,8 @@ fn main() {
 
     if let Some(master_stream) = &mut state.master_stream {
         master_stream.write(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        let mut buf = [0u8; 512];
+        master_stream.read(&mut buf).unwrap();
         master_stream
             .write(
                 format!(
@@ -97,9 +99,11 @@ fn main() {
                 .as_bytes(),
             )
             .unwrap();
+        master_stream.read(&mut buf).unwrap();
         master_stream
             .write(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
             .unwrap();
+        master_stream.read(&mut buf).unwrap();
     }
 
     for stream in listener.incoming() {
