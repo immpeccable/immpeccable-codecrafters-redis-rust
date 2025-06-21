@@ -28,6 +28,9 @@ fn main() {
         db_dir: None,
         db_file_name: None,
         role: String::from("master"),
+        master_host: None,
+        master_port: None,
+        master_stream: None,
     };
     let mut i = 1;
     let mut args_map: HashMap<String, String> = HashMap::new();
@@ -51,6 +54,13 @@ fn main() {
 
     if let Some(replica_of) = args_map.get(&"--replicaof".to_string()) {
         state.role = String::from("slave");
+        let parts: Vec<&str> = replica_of.split(" ").collect();
+        state.master_host = Some(parts[0].to_string());
+        state.master_port = Some(parts[1].to_string());
+        state.master_stream = Some(
+            TcpStream::connect(format!("{}:{}", parts[0].to_string(), parts[1].to_string()))
+                .unwrap(),
+        )
     }
 
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
@@ -74,6 +84,10 @@ fn main() {
                 }
             }
         }
+    }
+
+    if let Some(master_stream) = &mut state.master_stream {
+        master_stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
     }
 
     for stream in listener.incoming() {
