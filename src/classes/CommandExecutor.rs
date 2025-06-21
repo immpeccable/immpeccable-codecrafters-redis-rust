@@ -54,6 +54,9 @@ impl CommandExecutor {
                 "REPLCONF" => {
                     self.repl_conf_command(stream);
                 }
+                "PSYNC" => {
+                    self.psync(stream);
+                }
                 _ => {}
             },
             _ => {}
@@ -74,6 +77,14 @@ impl CommandExecutor {
 
     fn repl_conf_command(&mut self, stream: &mut TcpStream) {
         stream.write_all(b"+OK\r\n").unwrap();
+    }
+
+    fn psync(&mut self, stream: &mut TcpStream) {
+        let resp = self.convert_simple_string_to_resp(&String::from(
+            "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0",
+        ));
+
+        stream.write_all(resp.as_bytes()).unwrap();
     }
 
     fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {
