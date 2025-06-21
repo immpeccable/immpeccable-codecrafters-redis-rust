@@ -87,9 +87,9 @@ fn main() {
     }
 
     if let Some(master_stream) = &mut state.master_stream {
-        master_stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        master_stream.write(b"*1\r\n$4\r\nPING\r\n").unwrap();
         master_stream
-            .write_all(
+            .write(
                 format!(
                     "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n{}\r\n",
                     port
@@ -98,7 +98,7 @@ fn main() {
             )
             .unwrap();
         master_stream
-            .write_all(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
+            .write(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
             .unwrap();
     }
 
