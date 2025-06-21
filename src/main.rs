@@ -104,6 +104,9 @@ fn main() {
             .write(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
             .unwrap();
         master_stream.read(&mut buf).unwrap();
+        master_stream
+            .write(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
+            .unwrap();
     }
 
     for stream in listener.incoming() {
