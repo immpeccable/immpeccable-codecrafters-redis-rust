@@ -91,7 +91,6 @@ impl CommandExecutor {
                     stream.write_all(b"+OK\r\n").unwrap();
                 }
                 "GETACK" => {
-                    println!("no getack");
                     stream
                         .write_all(b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n")
                         .unwrap();

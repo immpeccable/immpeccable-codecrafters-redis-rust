@@ -157,6 +157,7 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
             Ok(n) => n,
         };
         pending.extend_from_slice(&buf[..n]);
+        println!("{}", String::from_utf8_lossy(&pending));
 
         if received_full_resync_command && pending[0] == b'$' {
             if let Some(end_of_rdb_clrf) = pending.windows(2).position(|w| w == b"\r\n") {
@@ -167,6 +168,7 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
                         .unwrap();
                 pending
                     .drain(..(1 + size_of_rdb_content.to_string().len() + 2 + size_of_rdb_content));
+
                 return pending;
             }
         } else {
