@@ -150,13 +150,12 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
 
     loop {
         let n = match stream.read(&mut buf) {
-            Ok(0) | Err(_) => {
-                eprintln!("replication handshake failed");
-                return Vec::new();
-            }
             Ok(n) => n,
+            Err(err) => 0,
         };
-        pending.extend_from_slice(&buf[..n]);
+        if n > 0 {
+            pending.extend_from_slice(&buf[..n]);
+        }
         println!("{}", String::from_utf8_lossy(&pending));
 
         if received_full_resync_command && pending[0] == b'$' {
