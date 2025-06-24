@@ -1,0 +1,152 @@
+warning: unused imports: `BufReader`, `Error`, `Read`, and `Seek`
+ --> src/classes/CommandExecutor.rs:9:19
+  |
+9 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
+  |                   ^^^^^^^^^  ^^^^^  ^^^^  ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `Seek` and `Write`
+ --> src/classes/Db.rs:3:43
+  |
+3 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
+  |                                           ^^^^  ^^^^^
+
+warning: unused import: `TcpListener`
+ --> src/classes/State.rs:3:11
+  |
+3 |     net::{TcpListener, TcpStream},
+  |           ^^^^^^^^^^^
+
+warning: unused import: `BufRead`
+ --> src/classes/CommandExecutor.rs:9:10
+  |
+9 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
+  |          ^^^^^^^
+
+warning: unused variable: `commands`
+   --> src/classes/CommandExecutor.rs:249:9
+    |
+249 |         commands: &mut Vec<RespDataType>,
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_commands`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `i`
+  --> src/classes/Parser.rs:22:13
+   |
+22 |         for i in 0..n {
+   |             ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: variable `command_size` is assigned to, but never used
+  --> src/classes/Parser.rs:31:17
+   |
+31 |         let mut command_size: u32 = 0;
+   |                 ^^^^^^^^^^^^
+   |
+   = note: consider using `_command_size` instead
+
+warning: value assigned to `command_size` is never read
+  --> src/classes/Parser.rs:35:17
+   |
+35 |                 command_size = command_size_as_string.parse::<u32>().unwrap();
+   |                 ^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` on by default
+
+warning: variants `SimpleString`, `SimpleError`, `Integer`, `Nil`, and `Boolean` are never constructed
+ --> src/classes/RespDataType.rs:3:5
+  |
+2 | pub enum RespDataType {
+  |          ------------ variants in this enum
+3 |     SimpleString(String),
+  |     ^^^^^^^^^^^^
+4 |     SimpleError(String),
+  |     ^^^^^^^^^^^
+5 |     Integer(i64),
+  |     ^^^^^^^
+...
+8 |     Nil,
+  |     ^^^
+9 |     Boolean(bool),
+  |     ^^^^^^^
+  |
+  = note: `RespDataType` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+  = note: `#[warn(dead_code)]` on by default
+
+warning: module `CommandExecutor` should have a snake case name
+ --> src/classes/mod.rs:1:9
+  |
+1 | pub mod CommandExecutor;
+  |         ^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `command_executor`
+  |
+  = note: `#[warn(non_snake_case)]` on by default
+
+warning: module `Db` should have a snake case name
+ --> src/classes/mod.rs:2:9
+  |
+2 | pub mod Db;
+  |         ^^ help: convert the identifier to snake case: `db`
+
+warning: module `ExpiringValue` should have a snake case name
+ --> src/classes/mod.rs:3:9
+  |
+3 | pub mod ExpiringValue;
+  |         ^^^^^^^^^^^^^ help: convert the identifier to snake case: `expiring_value`
+
+warning: module `Parser` should have a snake case name
+ --> src/classes/mod.rs:4:9
+  |
+4 | pub mod Parser;
+  |         ^^^^^^ help: convert the identifier to snake case: `parser`
+
+warning: module `RespDataType` should have a snake case name
+ --> src/classes/mod.rs:5:9
+  |
+5 | pub mod RespDataType;
+  |         ^^^^^^^^^^^^ help: convert the identifier to snake case: `resp_data_type`
+
+warning: module `State` should have a snake case name
+ --> src/classes/mod.rs:6:9
+  |
+6 | pub mod State;
+  |         ^^^^^ help: convert the identifier to snake case (notice the capitalization): `state`
+
+warning: module `Constants` should have a snake case name
+ --> src/classes/mod.rs:7:9
+  |
+7 | pub mod Constants;
+  |         ^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `constants`
+
+warning: `codecrafters-redis` (bin "codecrafters-redis") generated 16 warnings (run `cargo fix --bin "codecrafters-redis"` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.06s
+starting master on port 6379
+*1
+$4
+PING
+
+*3
+$8
+REPLCONF
+$14
+listening-port
+$4
+6380
+
+*3
+$8
+REPLCONF
+$4
+capa
+$6
+psync2
+
+*3
+$5
+PSYNC
+$1
+?
+$2
+-1
+

@@ -85,27 +85,23 @@ impl CommandExecutor {
         stream.write_all(b"+OK\r\n").unwrap();
     }
 
-    fn psync(&mut self, stream: &mut TcpStream, mut state: State) {
-        let resp = self.convert_simple_string_to_resp(&String::from(
-            "FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0",
-        ));
-        stream.write_all(resp.as_bytes()).unwrap();
-        let empty_rdb_as_bytes = hex::decode(EMPTY_RDB_HEX_REPRESENTATION).unwrap();
+    fn psync(&mut self, stream: &mut TcpStream, state: State) {
+        // send FULLRESYNC header
+        let header = format!("FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0");
         stream
-            .write_all(
-                &[
-                    format!("${}\r\n", empty_rdb_as_bytes.len()).as_bytes(),
-                    &empty_rdb_as_bytes,
-                ]
-                .concat(),
-            )
+            .write_all(format!("+{}\r\n", header).as_bytes())
             .unwrap();
 
-        state
-            .replicas
-            .lock()
-            .unwrap()
-            .push(stream.try_clone().unwrap());
+        // send empty-RDB payload
+        let dump = hex::decode(EMPTY_RDB_HEX_REPRESENTATION).unwrap();
+        stream
+            .write_all(format!("${}\r\n", dump.len()).as_bytes())
+            .unwrap();
+        stream.write_all(&dump).unwrap();
+
+        // clone this connection into our replicas list for downstream
+        let mut reps = state.replicas.lock().unwrap();
+        reps.push(stream.try_clone().unwrap());
     }
 
     fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {
@@ -118,7 +114,7 @@ impl CommandExecutor {
         stream: &mut TcpStream,
         state: State,
     ) {
-        let mut config_key = &commands[2];
+        let config_key = &commands[2];
         if let RespDataType::BulkString(config_key) = config_key {
             match config_key.to_uppercase().as_str() {
                 "DIR" => {
@@ -188,15 +184,14 @@ impl CommandExecutor {
 
         let mut state_guard = state.shared_data.lock().unwrap();
         state_guard.insert(key, hashmap_value);
-        stream.write_all(b"+OK\r\n").unwrap();
 
-        let state_replica_guard = state.replicas.lock().unwrap();
-
-        for mut client in state_replica_guard.iter() {
-            client
-                .write_all(self.convert_array_to_resp(commands.clone()).as_bytes())
-                .unwrap();
+        if state.role == "master" {
+            stream.write_all(b"+OK\r\n").unwrap();
         }
+
+        let payload = self.convert_array_to_resp(commands.clone());
+        let mut reps = state.replicas.lock().unwrap();
+        reps.retain(|mut client| client.write_all(payload.as_bytes()).is_ok());
     }
     fn get_command(
         &mut self,

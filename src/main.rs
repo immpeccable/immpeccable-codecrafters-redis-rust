@@ -1,124 +1,264 @@
-#![allow(unused_imports)]
+use core::str;
+#[allow(unused_imports)]
 use core::{num, panic};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Error, Read, Seek, Write};
-use std::iter::Peekable;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
-use std::str::{self, Chars};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, thread};
 
 mod classes;
-use classes::{
-    CommandExecutor::CommandExecutor, Constants::EMPTY_RDB_HEX_REPRESENTATION, Db::Db,
-    ExpiringValue::ExpiringValue, Parser::Parser, RespDataType::RespDataType, State::State,
-};
+use classes::{CommandExecutor::CommandExecutor, Db::Db, Parser::Parser, State::State};
 
 fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    println!("Logs from your program will appear here!");
-
-    let shared_state: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    // bootstrap shared state
+    let shared = Arc::new(Mutex::new(HashMap::new()));
     let mut state = State {
-        shared_data: shared_state,
+        shared_data: shared,
         db_dir: None,
         db_file_name: None,
-        role: String::from("master"),
+        role: "master".to_string(),
         master_host: None,
         master_port: None,
         master_stream: None,
         replicas: Arc::new(Mutex::new(Vec::new())),
     };
-    let mut i = 1;
-    let mut args_map: HashMap<String, String> = HashMap::new();
 
+    // parse args into a map
+    let mut args_map = HashMap::new();
     let args: Vec<String> = env::args().collect();
-
-    while i < args.len() {
+    let mut i = 1;
+    while i + 1 < args.len() {
         args_map.insert(args[i].clone(), args[i + 1].clone());
         i += 2;
     }
 
-    state.db_dir = args_map.get(&String::from("--dir")).cloned();
-    state.db_file_name = args_map.get(&String::from("--dbfilename")).cloned();
-    let mut port = String::from("6379");
-    if let Some(port_value) = args_map.get(&String::from("--port")) {
-        port = port_value.to_string();
-    }
-    if let (Some(_), Some(_)) = (&state.db_dir, &state.db_file_name) {
+    // optional RDB load
+    state.db_dir = args_map.get("--dir").cloned();
+    state.db_file_name = args_map.get("--dbfilename").cloned();
+    if state.db_dir.is_some() && state.db_file_name.is_some() {
         let _ = Db {}.load(state.clone());
     }
 
-    if let Some(replica_of) = args_map.get(&"--replicaof".to_string()) {
-        state.role = String::from("slave");
-        let parts: Vec<&str> = replica_of.split(" ").collect();
-        state.master_host = Some(parts[0].to_string());
-        state.master_port = Some(parts[1].to_string());
-        state.master_stream = Some(
-            TcpStream::connect(format!("{}:{}", parts[0].to_string(), parts[1].to_string()))
-                .unwrap(),
-        )
+    let port = args_map.get("--port").map(|s| s.as_str()).unwrap_or("6379");
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        .unwrap_or_else(|e| panic!("couldn't bind to port {}: {}", port, e));
+
+    if let Some(replica_of) = args_map.get("--replicaof") {
+        let mut parts = replica_of.split_whitespace();
+        let host = parts.next().expect("`--replicaof` requires `host port`");
+        let master_port = parts.next().expect("`--replicaof` requires `host port`");
+        state.role = "slave".to_string();
+        state.master_host = Some(host.to_string());
+        state.master_port = Some(master_port.to_string());
+
+        let mut master_stream = TcpStream::connect(format!("{}:{}", host, master_port))
+            .expect("couldn't connect to master");
+
+        let remaining_data = do_replication_handshake(&mut master_stream, port);
+        println!("{:?}", String::from_utf8_lossy(&remaining_data.to_vec()));
+
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            handle_replication_loop(master_stream, state_clone, remaining_data);
+        });
     }
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
-
-    fn handle_connection(stream: &mut TcpStream, state: State) {
-        let mut parser = Parser {};
-        let mut executor = CommandExecutor {};
-        loop {
-            let mut buf = [0; 512];
-            let buffer_size = stream.read(&mut buf).unwrap();
-            if buffer_size == 0 {
-                break;
+    println!("starting master on port {}", port);
+    for incoming in listener.incoming() {
+        match incoming {
+            Ok(stream) => {
+                let state_clone = state.clone();
+                thread::spawn(move || handle_client(stream, state_clone));
             }
-            match str::from_utf8(&mut buf) {
-                Ok(str) => {
-                    let mut commands = parser.parse(str);
-                    executor.execute(&mut commands, stream, state.clone());
-                }
-                Err(_) => {
-                    panic!("Error converting");
-                }
+            Err(e) => eprintln!("accept error: {}", e),
+        }
+    }
+}
+
+// common client‐handling loop (for master clients only)
+fn handle_client(mut stream: TcpStream, state: State) {
+    let mut parser = Parser {};
+    let mut exec = CommandExecutor {};
+    let mut pending: Vec<u8> = Vec::new();
+
+    loop {
+        let mut buf = [0u8; 2048];
+        let n = match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return, // connection closed or error
+            Ok(n) => n,
+        };
+
+        pending.extend_from_slice(&buf[..n]);
+
+        if let Some(frame_end) = find_complete_frame(&pending) {
+            let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
+
+            if let Ok(text) = std::str::from_utf8(&frame_bytes) {
+                println!("RESP text frame:\n{}", text);
+                let mut commands = parser.parse(text);
+                exec.execute(&mut commands, &mut stream, state.clone());
             }
         }
     }
+}
 
-    if let Some(master_stream) = &mut state.master_stream {
-        master_stream.write(b"*1\r\n$4\r\nPING\r\n").unwrap();
-        let mut buf = [0u8; 512];
-        master_stream.read(&mut buf).unwrap();
-        master_stream
-            .write(
-                format!(
-                    "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n{}\r\n",
-                    port
-                )
-                .as_bytes(),
+// PSYNC/REPLCONF handshake
+fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
+    // PING
+    stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+    let mut buf = [0u8; 512];
+    let n = stream.read(&mut buf).unwrap();
+    println!("PING response: {}", String::from_utf8_lossy(&buf[..n]));
+
+    // REPLCONF listening-port
+    stream
+        .write_all(
+            format!(
+                "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${}\r\n{}\r\n",
+                port.len(),
+                port
             )
-            .unwrap();
-        master_stream.read(&mut buf).unwrap();
-        master_stream
-            .write(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
-            .unwrap();
-        master_stream.read(&mut buf).unwrap();
-        master_stream
-            .write(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
-            .unwrap();
-    }
+            .as_bytes(),
+        )
+        .unwrap();
+    let n = stream.read(&mut buf).unwrap();
+    println!(
+        "REPLCONF listening-port response: {}",
+        String::from_utf8_lossy(&buf[..n])
+    );
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut stream) => {
-                let state_cloned = state.clone();
-                let _ = thread::spawn(move || handle_connection(&mut stream, state_cloned));
+    // REPLCONF capa psync2
+    stream
+        .write_all(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
+        .unwrap();
+    let n = stream.read(&mut buf).unwrap();
+    println!(
+        "REPLCONF capa response: {}",
+        String::from_utf8_lossy(&buf[..n])
+    );
+
+    // PSYNC ? -1
+    stream
+        .write_all(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
+        .unwrap();
+
+    // Read the FULLRESYNC response and RDB file
+    let mut pending = Vec::new();
+    let mut buf = [0u8; 4096];
+    let mut received_full_resync_command = false;
+
+    loop {
+        let n = match stream.read(&mut buf) {
+            Ok(0) | Err(_) => {
+                eprintln!("replication handshake failed");
+                return Vec::new();
             }
-            Err(e) => {
-                println!("error: {}", e);
+            Ok(n) => n,
+        };
+        pending.extend_from_slice(&buf[..n]);
+
+        if received_full_resync_command && pending[0] == b'$' {
+            if let Some(end_of_rdb_clrf) = pending.windows(2).position(|w| w == b"\r\n") {
+                let size_of_rdb_content =
+                    String::from_utf8((&pending[1..end_of_rdb_clrf]).to_vec())
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap();
+                pending
+                    .drain(..(1 + size_of_rdb_content.to_string().len() + 2 + size_of_rdb_content));
+                return pending;
+            }
+        } else {
+            if let Some(pos) = find_complete_frame(&pending) {
+                let fullresync_resp = String::from_utf8_lossy(&pending[..pos]);
+                if fullresync_resp.starts_with("+FULLRESYNC") {
+                    pending.drain(..pos);
+                    received_full_resync_command = true;
+                }
             }
         }
+    }
+}
+
+fn handle_replication_loop(mut stream: TcpStream, state: State, remaining_data: Vec<u8>) {
+    let mut pending = remaining_data;
+    let mut parser = Parser {};
+    let mut exec = CommandExecutor {};
+
+    loop {
+        let mut buf = [0u8; 4096];
+        let n = match stream.read(&mut buf) {
+            Ok(0) | Err(_) => {
+                eprintln!("replication stream closed");
+                return;
+            }
+            Ok(n) => n,
+        };
+        pending.extend_from_slice(&buf[..n]);
+
+        while let Some(frame_end) = find_complete_frame(&pending) {
+            let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
+            if let Ok(text) = std::str::from_utf8(&frame_bytes) {
+                println!("RESP text frame:\n{}", text);
+                let mut commands = parser.parse(text);
+                exec.execute(&mut commands, &mut stream, state.clone());
+            }
+        }
+    }
+}
+
+fn find_complete_frame(buf: &Vec<u8>) -> Option<usize> {
+    if buf.is_empty() {
+        return None;
+    };
+
+    fn find_bulk_size(buf: &Vec<u8>) -> Option<usize> {
+        if let Some(length_of_crlf_idx) = buf.windows(2).position(|w| w == b"\r\n") {
+            let length_buffer = &buf[1..length_of_crlf_idx];
+            let size_as_string = String::from_utf8(length_buffer.to_vec()).unwrap();
+            let size = size_as_string.parse::<usize>().unwrap();
+            let size_of_size = size_as_string.len();
+            return Some(1 + size_of_size + 2 + size + 2);
+        }
+        return None;
+    }
+
+    match buf[0] {
+        b'+' => {
+            if let Some(crlf_idx) = buf.windows(2).position(|w| w == b"\r\n") {
+                let frame_len = crlf_idx + 2;
+                return Some(frame_len);
+            }
+            return None;
+        }
+        b'$' => {
+            return find_bulk_size(buf);
+        }
+        b'*' => {
+            if let Some(array_size_end_crlf) = buf.windows(2).position(|w| w == b"\r\n") {
+                let array_size_buffer = &buf[1..array_size_end_crlf];
+                let array_size_as_string = String::from_utf8(array_size_buffer.to_vec()).unwrap();
+                let array_size = array_size_as_string.parse::<usize>().unwrap();
+                let mut total_bulk_string_size = 0;
+                let mut start = 1 + array_size_as_string.len() + 2;
+                for _ in 0..array_size {
+                    if let Some(bulk_size) = find_bulk_size(&buf[start..].to_vec()) {
+                        start += bulk_size;
+                        total_bulk_string_size += bulk_size;
+                    } else {
+                        return None;
+                    }
+                }
+                println!(
+                    "{}",
+                    1 + array_size_as_string.len() + 2 + total_bulk_string_size
+                );
+                return Some(1 + array_size_as_string.len() + 2 + total_bulk_string_size);
+            }
+            return None;
+        }
+        _ => None,
     }
 }
