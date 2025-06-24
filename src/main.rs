@@ -96,7 +96,6 @@ fn handle_client(mut stream: TcpStream, state: State) {
             let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
-                println!("RESP text frame:\n{}", text);
                 let mut commands = parser.parse(text);
                 exec.execute(&mut commands, &mut stream, state.clone());
             }

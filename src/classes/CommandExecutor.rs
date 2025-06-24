@@ -57,7 +57,7 @@ impl CommandExecutor {
                     self.info_command(commands, stream, state);
                 }
                 "REPLCONF" => {
-                    self.repl_conf_command(stream);
+                    self.repl_conf_command(commands, stream);
                 }
 
                 "PSYNC" => {
@@ -81,8 +81,23 @@ impl CommandExecutor {
         }
     }
 
-    fn repl_conf_command(&mut self, stream: &mut TcpStream) {
-        stream.write_all(b"+OK\r\n").unwrap();
+    fn repl_conf_command(&mut self, commands: &mut Vec<RespDataType>, stream: &mut TcpStream) {
+        if let RespDataType::BulkString(repl_conf_second) = &commands[1] {
+            match repl_conf_second.to_uppercase().as_str() {
+                "CAPA" => {
+                    stream.write_all(b"+OK\r\n").unwrap();
+                }
+                "LISTENING-PORT" => {
+                    stream.write_all(b"+OK\r\n").unwrap();
+                }
+                "GETACK" => {
+                    stream
+                        .write_all(b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n")
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
     }
 
     fn psync(&mut self, stream: &mut TcpStream, state: State) {
