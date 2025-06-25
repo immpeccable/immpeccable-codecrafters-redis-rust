@@ -149,7 +149,7 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
     while !is_full_resync_read || !is_rdb_content_read {
         let n = match stream.read(&mut buf) {
             Ok(n) => n,
-            Err(err) => 0,
+            Err(_) => 0,
         };
         pending.extend_from_slice(&buf[..n]);
 
