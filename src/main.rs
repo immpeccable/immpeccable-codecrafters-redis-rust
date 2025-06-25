@@ -65,7 +65,6 @@ fn main() {
         });
     }
 
-    println!("starting master on port {}", port);
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -143,22 +142,19 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
         .write_all(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
         .unwrap();
 
-    // Read the FULLRESYNC response and RDB file
-    let mut pending = Vec::new();
-    let mut buf = [0u8; 4096];
-    let mut received_full_resync_command = false;
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = vec![0; 2048];
+    let mut is_full_resync_read = false;
+    let mut is_rdb_content_read = false;
 
-    loop {
+    while !is_full_resync_read || !is_rdb_content_read {
         let n = match stream.read(&mut buf) {
             Ok(n) => n,
             Err(err) => 0,
         };
-        if n > 0 {
-            pending.extend_from_slice(&buf[..n]);
-        }
-        println!("{}", String::from_utf8_lossy(&pending));
+        pending.extend_from_slice(&buf[..n]);
 
-        if received_full_resync_command && pending[0] == b'$' {
+        if pending[0] == b'$' {
             if let Some(end_of_rdb_clrf) = pending.windows(2).position(|w| w == b"\r\n") {
                 let size_of_rdb_content =
                     String::from_utf8((&pending[1..end_of_rdb_clrf]).to_vec())
@@ -167,19 +163,17 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
                         .unwrap();
                 pending
                     .drain(..(1 + size_of_rdb_content.to_string().len() + 2 + size_of_rdb_content));
-
-                return pending;
+                is_rdb_content_read = true;
             }
-        } else {
-            if let Some(pos) = find_complete_frame(&pending) {
-                let fullresync_resp = String::from_utf8_lossy(&pending[..pos]);
-                if fullresync_resp.starts_with("+FULLRESYNC") {
-                    pending.drain(..pos);
-                    received_full_resync_command = true;
-                }
+        } else if let Some(pos) = find_complete_frame(&pending) {
+            let fullresync_resp = String::from_utf8_lossy(&pending[..pos]);
+            if fullresync_resp.starts_with("+FULLRESYNC") {
+                pending.drain(..pos);
+                is_full_resync_read = true;
             }
         }
     }
+    return pending;
 }
 
 fn handle_replication_loop(mut stream: TcpStream, state: State, remaining_data: Vec<u8>) {
@@ -190,11 +184,8 @@ fn handle_replication_loop(mut stream: TcpStream, state: State, remaining_data: 
     loop {
         let mut buf = [0u8; 4096];
         let n = match stream.read(&mut buf) {
-            Ok(0) | Err(_) => {
-                eprintln!("replication stream closed");
-                return;
-            }
             Ok(n) => n,
+            Err(err) => 0,
         };
         pending.extend_from_slice(&buf[..n]);
 
