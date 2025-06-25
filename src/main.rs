@@ -196,11 +196,11 @@ fn handle_replication_loop(mut stream: TcpStream, mut state: State, remaining_da
         pending.extend_from_slice(&buf[..n]);
 
         while let Some(frame_end) = find_complete_frame(&pending) {
-            state.offset += frame_end;
             let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let mut commands = parser.parse(text);
                 exec.execute(&mut commands, &mut stream, state.clone());
+                state.offset += frame_end;
             }
         }
     }
