@@ -153,8 +153,10 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
             Err(err) => 0,
         };
         pending.extend_from_slice(&buf[..n]);
+        println!("current status: {}", String::from_utf8_lossy(&pending));
 
         if pending[0] == b'$' {
+            println!("received rdb");
             if let Some(end_of_rdb_clrf) = pending.windows(2).position(|w| w == b"\r\n") {
                 let size_of_rdb_content =
                     String::from_utf8((&pending[1..end_of_rdb_clrf]).to_vec())
@@ -167,12 +169,14 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
             }
         } else if let Some(pos) = find_complete_frame(&pending) {
             let fullresync_resp = String::from_utf8_lossy(&pending[..pos]);
+            println!("{} {} {}", fullresync_resp, pos, pending.len());
             if fullresync_resp.starts_with("+FULLRESYNC") {
                 pending.drain(..pos);
                 is_full_resync_read = true;
             }
         }
     }
+    println!("at the end {}", String::from_utf8_lossy(&pending));
     return pending;
 }
 
