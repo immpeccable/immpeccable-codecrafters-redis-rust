@@ -159,7 +159,12 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
         if !is_full_resync_read {
             if let Some(pos) = find_complete_frame(&pending) {
                 let fullresync_resp = String::from_utf8_lossy(&pending[..pos]);
-                println!("{} {} {}", fullresync_resp, pos, pending.len());
+                println!(
+                    "{} {} {} received resync",
+                    fullresync_resp,
+                    pos,
+                    pending.len()
+                );
                 if fullresync_resp.starts_with("+FULLRESYNC") {
                     pending.drain(..pos);
                     is_full_resync_read = true;
