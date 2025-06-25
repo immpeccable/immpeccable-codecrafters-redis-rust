@@ -31,7 +31,7 @@ impl CommandExecutor {
         match first_command {
             RespDataType::BulkString(bulk_str) => match bulk_str.to_uppercase().as_str() {
                 "PING" => {
-                    self.ping_command(commands, stream);
+                    self.ping_command(commands, stream, state);
                 }
                 "ECHO" => {
                     self.echo_command(commands, stream);
@@ -131,8 +131,10 @@ impl CommandExecutor {
         reps.push(stream.try_clone().unwrap());
     }
 
-    fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream) {
-        stream.write_all(b"+PONG\r\n").unwrap();
+    fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream, state: State) {
+        if state.role == "master" {
+            stream.write_all(b"+PONG\r\n").unwrap();
+        }
     }
 
     fn config_get_command(
