@@ -58,7 +58,6 @@ fn main() {
             .expect("couldn't connect to master");
 
         let remaining_data = do_replication_handshake(&mut master_stream, port);
-        println!("{:?}", String::from_utf8_lossy(&remaining_data.to_vec()));
 
         let state_clone = state.clone();
         thread::spawn(move || {
