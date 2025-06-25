@@ -200,6 +200,7 @@ fn handle_replication_loop(mut stream: TcpStream, mut state: State, remaining_da
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let mut commands = parser.parse(text);
                 exec.execute(&mut commands, &mut stream, state.clone());
+                println!("offset: {} {}", frame_end, text);
                 state.offset += frame_end;
             }
         }
