@@ -147,14 +147,7 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
     let mut is_full_resync_read = false;
     let mut is_rdb_content_read = false;
 
-    while !is_full_resync_read || !is_rdb_content_read {
-        let n = match stream.read(&mut buf) {
-            Ok(n) => n,
-            Err(err) => 0,
-        };
-        pending.extend_from_slice(&buf[..n]);
-        println!("current status: {}", String::from_utf8_lossy(&pending));
-
+    fn try_to_read_rdb(pending: &mut Vec<u8>) -> bool {
         if pending[0] == b'$' {
             println!("received rdb");
             if let Some(end_of_rdb_clrf) = pending.windows(2).position(|w| w == b"\r\n") {
@@ -165,14 +158,33 @@ fn do_replication_handshake(stream: &mut TcpStream, port: &str) -> Vec<u8> {
                         .unwrap();
                 pending
                     .drain(..(1 + size_of_rdb_content.to_string().len() + 2 + size_of_rdb_content));
-                is_rdb_content_read = true;
             }
-        } else if let Some(pos) = find_complete_frame(&pending) {
+        }
+        return true;
+    }
+
+    while !is_full_resync_read || !is_rdb_content_read {
+        let n = match stream.read(&mut buf) {
+            Ok(n) => n,
+            Err(err) => 0,
+        };
+        pending.extend_from_slice(&buf[..n]);
+        println!("current status: {}", String::from_utf8_lossy(&pending));
+
+        if try_to_read_rdb(&mut pending) {
+            is_rdb_content_read = true;
+        }
+
+        if let Some(pos) = find_complete_frame(&pending) {
             let fullresync_resp = String::from_utf8_lossy(&pending[..pos]);
             println!("{} {} {}", fullresync_resp, pos, pending.len());
             if fullresync_resp.starts_with("+FULLRESYNC") {
                 pending.drain(..pos);
                 is_full_resync_read = true;
+            }
+
+            if try_to_read_rdb(&mut pending) {
+                is_rdb_content_read = true;
             }
         }
     }
