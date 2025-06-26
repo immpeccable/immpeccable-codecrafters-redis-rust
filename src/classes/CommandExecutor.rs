@@ -86,7 +86,12 @@ impl CommandExecutor {
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
-        stream.lock().await.write_all(b":0\r\n").await.unwrap();
+        stream
+            .lock()
+            .await
+            .write_all(format!(":{}\r\n", state.replicas.lock().await.len()).as_bytes())
+            .await
+            .unwrap();
     }
 
     async fn echo_command(
