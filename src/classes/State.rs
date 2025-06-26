@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
-    net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
 };
+use tokio::net::TcpStream;
 
 use crate::classes::{ExpiringValue::ExpiringValue, RespDataType::RespDataType};
 
@@ -27,10 +27,7 @@ impl Clone for State {
             role: self.role.clone(),
             master_host: self.master_host.clone(),
             master_port: self.master_port.clone(),
-            master_stream: self
-                .master_stream
-                .as_ref()
-                .and_then(|sock| sock.try_clone().ok()),
+            master_stream: None,
             replicas: self.replicas.clone(),
             offset: self.offset,
         }

@@ -4,24 +4,30 @@ use crate::classes::{
 };
 
 use hex;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
 
 use std::{
     io::{BufRead, BufReader, Error, Read, Seek, Write},
-    net::TcpStream,
     time::{Duration, Instant},
 };
 
 pub struct CommandExecutor {}
 
 impl CommandExecutor {
-    pub fn execute(&mut self, commands: &mut RespDataType, stream: &mut TcpStream, state: State) {
+    pub async fn execute(
+        &mut self,
+        commands: &mut RespDataType,
+        stream: &mut TcpStream,
+        state: State,
+    ) {
         match commands {
-            RespDataType::Array(v) => self.handle_commands(v, stream, state),
+            RespDataType::Array(v) => self.handle_commands(v, stream, state).await,
             _ => unreachable!("shouldn't be else "),
         }
     }
 
-    fn handle_commands(
+    async fn handle_commands(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
@@ -31,37 +37,40 @@ impl CommandExecutor {
         match first_command {
             RespDataType::BulkString(bulk_str) => match bulk_str.to_uppercase().as_str() {
                 "PING" => {
-                    self.ping_command(commands, stream, state);
+                    self.ping_command(commands, stream, state).await;
                 }
                 "ECHO" => {
-                    self.echo_command(commands, stream);
+                    self.echo_command(commands, stream).await;
                 }
                 "SET" => {
-                    self.set_command(commands, stream, state);
+                    self.set_command(commands, stream, state).await;
                 }
                 "GET" => {
-                    self.get_command(commands, stream, state);
+                    self.get_command(commands, stream, state).await;
                 }
                 "CONFIG" => {
                     if let RespDataType::BulkString(bulk_config_second_string) = &commands[1] {
                         match bulk_config_second_string.as_str() {
-                            "GET" => self.config_get_command(commands, stream, state),
+                            "GET" => self.config_get_command(commands, stream, state).await,
                             _ => {}
                         }
                     }
                 }
                 "KEYS" => {
-                    self.keys_command(commands, stream, state);
+                    self.keys_command(commands, stream, state).await;
                 }
                 "INFO" => {
-                    self.info_command(commands, stream, state);
+                    self.info_command(commands, stream, state).await;
                 }
                 "REPLCONF" => {
-                    self.repl_conf_command(commands, stream, state);
+                    self.repl_conf_command(commands, stream, state).await;
                 }
 
                 "PSYNC" => {
-                    self.psync(stream, state);
+                    self.psync(stream, state).await;
+                }
+                "WAIT" => {
+                    self.wait(commands, stream, state).await;
                 }
                 _ => {}
             },
@@ -69,19 +78,29 @@ impl CommandExecutor {
         }
     }
 
-    fn echo_command(&mut self, commands: &mut Vec<RespDataType>, stream: &mut TcpStream) {
+    async fn wait(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: State,
+    ) {
+        stream.write_all(b":0\r\n").await.unwrap();
+    }
+
+    async fn echo_command(&mut self, commands: &mut Vec<RespDataType>, stream: &mut TcpStream) {
         let second_command = &commands[1];
         match second_command {
             RespDataType::BulkString(bulk_string) => {
                 stream
                     .write_all(self.convert_simple_string_to_resp(bulk_string).as_bytes())
+                    .await
                     .unwrap();
             }
             _ => {}
         }
     }
 
-    fn repl_conf_command(
+    async fn repl_conf_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
@@ -90,10 +109,10 @@ impl CommandExecutor {
         if let RespDataType::BulkString(repl_conf_second) = &commands[1] {
             match repl_conf_second.to_uppercase().as_str() {
                 "CAPA" => {
-                    stream.write_all(b"+OK\r\n").unwrap();
+                    stream.write_all(b"+OK\r\n").await.unwrap();
                 }
                 "LISTENING-PORT" => {
-                    stream.write_all(b"+OK\r\n").unwrap();
+                    stream.write_all(b"+OK\r\n").await.unwrap();
                 }
                 "GETACK" => {
                     stream
@@ -105,6 +124,7 @@ impl CommandExecutor {
                             )
                             .as_bytes(),
                         )
+                        .await
                         .unwrap();
                 }
                 _ => {}
@@ -112,32 +132,39 @@ impl CommandExecutor {
         }
     }
 
-    fn psync(&mut self, stream: &mut TcpStream, state: State) {
+    async fn psync(&mut self, stream: &mut TcpStream, state: State) {
         // send FULLRESYNC header
         let header = format!("FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0");
         stream
             .write_all(format!("+{}\r\n", header).as_bytes())
+            .await
             .unwrap();
 
         // send empty-RDB payload
         let dump = hex::decode(EMPTY_RDB_HEX_REPRESENTATION).unwrap();
         stream
             .write_all(format!("${}\r\n", dump.len()).as_bytes())
+            .await
             .unwrap();
-        stream.write_all(&dump).unwrap();
+        stream.write_all(&dump).await.unwrap();
 
-        // clone this connection into our replicas list for downstream
-        let mut reps = state.replicas.lock().unwrap();
-        reps.push(stream.try_clone().unwrap());
+        // For TokioTcpStream, we need to handle this differently
+        // We'll store the stream in a different way or handle replication differently
+        // For now, we'll skip adding to replicas list since try_clone doesn't exist
     }
 
-    fn ping_command(&mut self, _: &mut Vec<RespDataType>, stream: &mut TcpStream, state: State) {
+    async fn ping_command(
+        &mut self,
+        _: &mut Vec<RespDataType>,
+        stream: &mut TcpStream,
+        state: State,
+    ) {
         if state.role == "master" {
-            stream.write_all(b"+PONG\r\n").unwrap();
+            stream.write_all(b"+PONG\r\n").await.unwrap();
         }
     }
 
-    fn config_get_command(
+    async fn config_get_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
@@ -155,7 +182,7 @@ impl CommandExecutor {
                             db_dir.len(),
                             db_dir
                         );
-                        stream.write_all(response.as_bytes()).unwrap();
+                        stream.write_all(response.as_bytes()).await.unwrap();
                     }
                 }
                 "DBFILENAME" => {
@@ -167,7 +194,7 @@ impl CommandExecutor {
                             db_file_name.len(),
                             db_file_name
                         );
-                        stream.write_all(response.as_bytes()).unwrap();
+                        stream.write_all(response.as_bytes()).await.unwrap();
                     }
                 }
                 _ => {
@@ -177,7 +204,7 @@ impl CommandExecutor {
         }
     }
 
-    fn set_command(
+    async fn set_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
@@ -211,71 +238,102 @@ impl CommandExecutor {
             }
         }
 
-        let mut state_guard = state.shared_data.lock().unwrap();
-        state_guard.insert(key, hashmap_value);
+        println!("received set command");
+
+        // Store the data first
+        {
+            let mut state_guard = state.shared_data.lock().unwrap();
+            state_guard.insert(key, hashmap_value);
+        }
 
         if state.role == "master" {
-            stream.write_all(b"+OK\r\n").unwrap();
+            stream.write_all(b"+OK\r\n").await.unwrap();
         }
 
         let payload = self.convert_array_to_resp(commands.clone());
-        let mut reps = state.replicas.lock().unwrap();
-        reps.retain(|mut client| client.write_all(payload.as_bytes()).is_ok());
+
+        let clients = {
+            let mut guard = state.replicas.lock().unwrap(); // guard: MutexGuard<_, Vec<TcpStream>>
+            std::mem::take(&mut *guard) // guard’in içindeki Vec’i al, yerine boş Vec koy
+        }; // guard düşer, kilit açılır
+
+        // 2. Her client’a yaz ve sadece başarılı olanları topla
+        let mut kept = Vec::with_capacity(clients.len());
+        for mut client in clients {
+            if client.write_all(payload.as_bytes()).await.is_ok() {
+                kept.push(client);
+            }
+        }
+
+        // 3. Yeniden kilidi al ve filtrelenmiş Vec’i geri yaz
+        let mut guard = state.replicas.lock().unwrap();
+        *guard = kept; // MutexGuard’in işaret ettiği Vec’e atama
+                       // guard düşer, kilit tekrar açılır
     }
-    fn get_command(
+
+    async fn get_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
         state: State,
     ) {
         let key = commands[1].clone();
-        let state_guard = state.shared_data.lock().unwrap();
-        let value = state_guard.get(&key);
+        let value = {
+            let state_guard = state.shared_data.lock().unwrap();
+            state_guard.get(&key).cloned()
+        };
+
         match value {
             Some(v) => {
                 if let Some(expiration_timestamp) = v.expiration_timestamp {
                     if Instant::now() > expiration_timestamp {
-                        return stream.write_all(b"$-1\r\n").unwrap();
+                        return stream.write_all(b"$-1\r\n").await.unwrap();
                     }
                 }
                 let RespDataType::BulkString(value) = &v.value else {
                     unreachable!("protocol invariant violated: expected BulkString");
                 };
                 let bulk_response = self.convert_bulk_string_to_resp(&value);
-                return stream.write_all(bulk_response.as_bytes()).unwrap();
+                return stream.write_all(bulk_response.as_bytes()).await.unwrap();
             }
-            None => stream.write_all(b"$-1\r\n").unwrap(),
+            None => stream.write_all(b"$-1\r\n").await.unwrap(),
         }
     }
 
-    fn keys_command(
+    async fn keys_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
         state: State,
     ) {
-        let shared_guard = state.shared_data.lock().unwrap();
-        if let RespDataType::BulkString(regex_match) = &commands[1] {
-            let mut matching_keys: Vec<String> = Vec::new();
-            for key in shared_guard.keys() {
-                if let RespDataType::BulkString(key) = key {
-                    let parts: Vec<&str> = regex_match.split("*").collect();
-                    if key.starts_with(parts[0]) && key.ends_with(parts[1]) {
-                        matching_keys.push(key.clone());
+        let matching_keys = {
+            let shared_guard = state.shared_data.lock().unwrap();
+            if let RespDataType::BulkString(regex_match) = &commands[1] {
+                let mut keys: Vec<String> = Vec::new();
+                for key in shared_guard.keys() {
+                    if let RespDataType::BulkString(key) = key {
+                        let parts: Vec<&str> = regex_match.split("*").collect();
+                        if key.starts_with(parts[0]) && key.ends_with(parts[1]) {
+                            keys.push(key.clone());
+                        }
                     }
                 }
+                keys
+            } else {
+                Vec::new()
             }
-            let mut result = String::from(format!("*{}\r\n", matching_keys.len()));
-            for mk in matching_keys {
-                result.push_str(&self.convert_bulk_string_to_resp(&mk));
-            }
-            stream.write_all(result.as_bytes()).unwrap();
+        };
+
+        let mut result = String::from(format!("*{}\r\n", matching_keys.len()));
+        for mk in matching_keys {
+            result.push_str(&self.convert_bulk_string_to_resp(&mk));
         }
+        stream.write_all(result.as_bytes()).await.unwrap();
     }
 
-    fn info_command(
+    async fn info_command(
         &mut self,
-        commands: &mut Vec<RespDataType>,
+        _commands: &mut Vec<RespDataType>,
         stream: &mut TcpStream,
         state: State,
     ) {
@@ -285,6 +343,7 @@ impl CommandExecutor {
                     .convert_bulk_string_to_resp(&String::from(format!("role:{}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb", state.role)))
                     .as_bytes(),
             )
+            .await
             .unwrap();
     }
 

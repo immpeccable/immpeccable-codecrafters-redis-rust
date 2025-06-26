@@ -1,10 +1,16 @@
-warning: unused imports: `BufReader`, `Error`, `Read`, and `Seek`
- --> src/classes/CommandExecutor.rs:9:19
+warning: unused imports: `TcpListener` and `TcpStream`
+ --> src/main.rs:6:16
   |
-9 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
-  |                   ^^^^^^^^^  ^^^^^  ^^^^  ^^^^
+6 | use std::net::{TcpListener, TcpStream};
+  |                ^^^^^^^^^^^  ^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `BufReader`, `Error`, `Read`, and `Seek`
+  --> src/classes/CommandExecutor.rs:11:19
+   |
+11 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
+   |                   ^^^^^^^^^  ^^^^^  ^^^^  ^^^^
 
 warning: unused imports: `Seek` and `Write`
  --> src/classes/Db.rs:3:43
@@ -12,25 +18,49 @@ warning: unused imports: `Seek` and `Write`
 3 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
   |                                           ^^^^  ^^^^^
 
-warning: unused import: `TcpListener`
- --> src/classes/State.rs:3:11
-  |
-3 |     net::{TcpListener, TcpStream},
-  |           ^^^^^^^^^^^
+warning: unused variable: `commands`
+  --> src/classes/CommandExecutor.rs:83:9
+   |
+83 |         commands: &mut Vec<RespDataType>,
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_commands`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `state`
+  --> src/classes/CommandExecutor.rs:85:9
+   |
+85 |         state: State,
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+
+warning: unused variable: `state`
+   --> src/classes/CommandExecutor.rs:135:55
+    |
+135 |     async fn psync(&mut self, stream: &mut TcpStream, state: State) {
+    |                                                       ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+
+warning: unused import: `Write`
+  --> src/classes/CommandExecutor.rs:11:49
+   |
+11 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
+   |                                                 ^^^^^
 
 warning: unused import: `BufRead`
- --> src/classes/CommandExecutor.rs:9:10
-  |
-9 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
-  |          ^^^^^^^
+  --> src/classes/CommandExecutor.rs:11:10
+   |
+11 |     io::{BufRead, BufReader, Error, Read, Seek, Write},
+   |          ^^^^^^^
 
-warning: unused variable: `commands`
-   --> src/classes/CommandExecutor.rs:249:9
-    |
-249 |         commands: &mut Vec<RespDataType>,
-    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_commands`
-    |
-    = note: `#[warn(unused_variables)]` on by default
+warning: unused import: `Read`
+ --> src/main.rs:5:15
+  |
+5 | use std::io::{Read, Write};
+  |               ^^^^
+
+warning: unused import: `Write`
+ --> src/main.rs:5:21
+  |
+5 | use std::io::{Read, Write};
+  |                     ^^^^^
 
 warning: unused variable: `i`
   --> src/classes/Parser.rs:22:13
@@ -74,6 +104,15 @@ warning: variants `SimpleString`, `SimpleError`, `Integer`, `Nil`, and `Boolean`
   |
   = note: `RespDataType` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
   = note: `#[warn(dead_code)]` on by default
+
+warning: field `master_stream` is never read
+  --> src/classes/State.rs:16:9
+   |
+9  | pub struct State {
+   |            ----- field in this struct
+...
+16 |     pub master_stream: Option<TcpStream>,
+   |         ^^^^^^^^^^^^^
 
 warning: module `CommandExecutor` should have a snake case name
  --> src/classes/mod.rs:1:9
@@ -119,34 +158,9 @@ warning: module `Constants` should have a snake case name
 7 | pub mod Constants;
   |         ^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `constants`
 
-warning: `codecrafters-redis` (bin "codecrafters-redis") generated 16 warnings (run `cargo fix --bin "codecrafters-redis"` to apply 3 suggestions)
-    Finished `release` profile [optimized] target(s) in 0.06s
-starting master on port 6379
-*1
-$4
-PING
+warning: `codecrafters-redis` (bin "codecrafters-redis") generated 22 warnings (run `cargo fix --bin "codecrafters-redis"` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.02s
 
-*3
-$8
-REPLCONF
-$14
-listening-port
-$4
-6380
-
-*3
-$8
-REPLCONF
-$4
-capa
-$6
-psync2
-
-*3
-$5
-PSYNC
-$1
-?
-$2
--1
-
+thread 'main' panicked at src/main.rs:52:29:
+couldn't bind to port 6379: Address already in use (os error 48)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
