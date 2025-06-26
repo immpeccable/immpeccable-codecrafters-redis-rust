@@ -1,8 +1,8 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+use std::{collections::HashMap, sync::Arc};
+use tokio::{
+    net::{tcp::OwnedWriteHalf, TcpStream},
+    sync::Mutex,
 };
-use tokio::net::TcpStream;
 
 use crate::classes::{ExpiringValue::ExpiringValue, RespDataType::RespDataType};
 
@@ -14,7 +14,7 @@ pub struct State {
     pub master_host: Option<String>,
     pub master_port: Option<String>,
     pub master_stream: Option<TcpStream>,
-    pub replicas: Arc<Mutex<Vec<TcpStream>>>,
+    pub replicas: Arc<Mutex<Vec<Arc<Mutex<OwnedWriteHalf>>>>>,
     pub offset: usize,
 }
 

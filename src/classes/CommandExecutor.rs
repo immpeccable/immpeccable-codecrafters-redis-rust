@@ -4,9 +4,11 @@ use crate::classes::{
 };
 
 use hex;
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
+use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 
+use std::sync::Arc;
 use std::{
     io::{BufRead, BufReader, Error, Read, Seek, Write},
     time::{Duration, Instant},
@@ -18,7 +20,7 @@ impl CommandExecutor {
     pub async fn execute(
         &mut self,
         commands: &mut RespDataType,
-        stream: &mut TcpStream,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         match commands {
@@ -30,7 +32,7 @@ impl CommandExecutor {
     async fn handle_commands(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         let first_command = &commands[0];
@@ -81,17 +83,23 @@ impl CommandExecutor {
     async fn wait(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
-        stream.write_all(b":0\r\n").await.unwrap();
+        stream.lock().await.write_all(b":0\r\n").await.unwrap();
     }
 
-    async fn echo_command(&mut self, commands: &mut Vec<RespDataType>, stream: &mut TcpStream) {
+    async fn echo_command(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
+    ) {
         let second_command = &commands[1];
         match second_command {
             RespDataType::BulkString(bulk_string) => {
                 stream
+                    .lock()
+                    .await
                     .write_all(self.convert_simple_string_to_resp(bulk_string).as_bytes())
                     .await
                     .unwrap();
@@ -103,19 +111,21 @@ impl CommandExecutor {
     async fn repl_conf_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         if let RespDataType::BulkString(repl_conf_second) = &commands[1] {
             match repl_conf_second.to_uppercase().as_str() {
                 "CAPA" => {
-                    stream.write_all(b"+OK\r\n").await.unwrap();
+                    stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
                 }
                 "LISTENING-PORT" => {
-                    stream.write_all(b"+OK\r\n").await.unwrap();
+                    stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
                 }
                 "GETACK" => {
                     stream
+                        .lock()
+                        .await
                         .write_all(
                             format!(
                                 "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
@@ -132,10 +142,13 @@ impl CommandExecutor {
         }
     }
 
-    async fn psync(&mut self, stream: &mut TcpStream, state: State) {
-        // send FULLRESYNC header
+    async fn psync(&mut self, mut stream: Arc<Mutex<OwnedWriteHalf>>, state: State) {
+        // split into a read half (for your handshake & loop) and a write half (which is Clone)
+
         let header = format!("FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0");
         stream
+            .lock()
+            .await
             .write_all(format!("+{}\r\n", header).as_bytes())
             .await
             .unwrap();
@@ -143,31 +156,31 @@ impl CommandExecutor {
         // send empty-RDB payload
         let dump = hex::decode(EMPTY_RDB_HEX_REPRESENTATION).unwrap();
         stream
+            .lock()
+            .await
             .write_all(format!("${}\r\n", dump.len()).as_bytes())
             .await
             .unwrap();
-        stream.write_all(&dump).await.unwrap();
+        stream.lock().await.write_all(&dump).await.unwrap();
 
-        // For TokioTcpStream, we need to handle this differently
-        // We'll store the stream in a different way or handle replication differently
-        // For now, we'll skip adding to replicas list since try_clone doesn't exist
+        state.replicas.lock().await.push(stream.clone());
     }
 
     async fn ping_command(
         &mut self,
         _: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         if state.role == "master" {
-            stream.write_all(b"+PONG\r\n").await.unwrap();
+            stream.lock().await.write_all(b"+PONG\r\n").await.unwrap();
         }
     }
 
     async fn config_get_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         let config_key = &commands[2];
@@ -182,7 +195,12 @@ impl CommandExecutor {
                             db_dir.len(),
                             db_dir
                         );
-                        stream.write_all(response.as_bytes()).await.unwrap();
+                        stream
+                            .lock()
+                            .await
+                            .write_all(response.as_bytes())
+                            .await
+                            .unwrap();
                     }
                 }
                 "DBFILENAME" => {
@@ -194,7 +212,12 @@ impl CommandExecutor {
                             db_file_name.len(),
                             db_file_name
                         );
-                        stream.write_all(response.as_bytes()).await.unwrap();
+                        stream
+                            .lock()
+                            .await
+                            .write_all(response.as_bytes())
+                            .await
+                            .unwrap();
                     }
                 }
                 _ => {
@@ -207,7 +230,7 @@ impl CommandExecutor {
     async fn set_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         let (key, value) = (commands[1].clone(), commands[2].clone());
@@ -242,31 +265,39 @@ impl CommandExecutor {
 
         // Store the data first
         {
-            let mut state_guard = state.shared_data.lock().unwrap();
+            let mut state_guard = state.shared_data.lock().await;
             state_guard.insert(key, hashmap_value);
         }
 
         if state.role == "master" {
-            stream.write_all(b"+OK\r\n").await.unwrap();
+            stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
         }
 
         let payload = self.convert_array_to_resp(commands.clone());
 
         let clients = {
-            let mut guard = state.replicas.lock().unwrap(); // guard: MutexGuard<_, Vec<TcpStream>>
+            let mut guard = state.replicas.lock().await; // guard: MutexGuard<_, Vec<TcpStream>>
+            println!("propagating to the clients {}", guard.len());
+
             std::mem::take(&mut *guard) // guard’in içindeki Vec’i al, yerine boş Vec koy
         }; // guard düşer, kilit açılır
 
         // 2. Her client’a yaz ve sadece başarılı olanları topla
         let mut kept = Vec::with_capacity(clients.len());
         for mut client in clients {
-            if client.write_all(payload.as_bytes()).await.is_ok() {
+            if client
+                .lock()
+                .await
+                .write_all(payload.as_bytes())
+                .await
+                .is_ok()
+            {
                 kept.push(client);
             }
         }
 
         // 3. Yeniden kilidi al ve filtrelenmiş Vec’i geri yaz
-        let mut guard = state.replicas.lock().unwrap();
+        let mut guard = state.replicas.lock().await;
         *guard = kept; // MutexGuard’in işaret ettiği Vec’e atama
                        // guard düşer, kilit tekrar açılır
     }
@@ -274,12 +305,12 @@ impl CommandExecutor {
     async fn get_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         let key = commands[1].clone();
         let value = {
-            let state_guard = state.shared_data.lock().unwrap();
+            let state_guard = state.shared_data.lock().await;
             state_guard.get(&key).cloned()
         };
 
@@ -287,27 +318,32 @@ impl CommandExecutor {
             Some(v) => {
                 if let Some(expiration_timestamp) = v.expiration_timestamp {
                     if Instant::now() > expiration_timestamp {
-                        return stream.write_all(b"$-1\r\n").await.unwrap();
+                        return stream.lock().await.write_all(b"$-1\r\n").await.unwrap();
                     }
                 }
                 let RespDataType::BulkString(value) = &v.value else {
                     unreachable!("protocol invariant violated: expected BulkString");
                 };
                 let bulk_response = self.convert_bulk_string_to_resp(&value);
-                return stream.write_all(bulk_response.as_bytes()).await.unwrap();
+                return stream
+                    .lock()
+                    .await
+                    .write_all(bulk_response.as_bytes())
+                    .await
+                    .unwrap();
             }
-            None => stream.write_all(b"$-1\r\n").await.unwrap(),
+            None => stream.lock().await.write_all(b"$-1\r\n").await.unwrap(),
         }
     }
 
     async fn keys_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
         let matching_keys = {
-            let shared_guard = state.shared_data.lock().unwrap();
+            let shared_guard = state.shared_data.lock().await;
             if let RespDataType::BulkString(regex_match) = &commands[1] {
                 let mut keys: Vec<String> = Vec::new();
                 for key in shared_guard.keys() {
@@ -328,16 +364,21 @@ impl CommandExecutor {
         for mk in matching_keys {
             result.push_str(&self.convert_bulk_string_to_resp(&mk));
         }
-        stream.write_all(result.as_bytes()).await.unwrap();
+        stream
+            .lock()
+            .await
+            .write_all(result.as_bytes())
+            .await
+            .unwrap();
     }
 
     async fn info_command(
         &mut self,
         _commands: &mut Vec<RespDataType>,
-        stream: &mut TcpStream,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
         state: State,
     ) {
-        stream
+        stream.lock().await
             .write_all(
                 &self
                     .convert_bulk_string_to_resp(&String::from(format!("role:{}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb", state.role)))

@@ -1,11 +1,11 @@
+use core::panic;
 use core::str;
-#[allow(unused_imports)]
-use core::{num, panic};
 use std::collections::HashMap;
 use std::env;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream};
+use tokio::sync::Mutex;
 use tokio::{signal, task};
 
 mod classes;
@@ -40,7 +40,7 @@ async fn main() {
     state.db_dir = args_map.get("--dir").cloned();
     state.db_file_name = args_map.get("--dbfilename").cloned();
     if state.db_dir.is_some() && state.db_file_name.is_some() {
-        let _ = Db {}.load(state.clone());
+        let _ = Db {}.load(state.clone()).await;
     }
 
     let port = args_map.get("--port").map(|s| s.as_str()).unwrap_or("6379");
@@ -48,12 +48,6 @@ async fn main() {
     let listener = TokioTcpListener::bind(format!("127.0.0.1:{}", port))
         .await
         .unwrap_or_else(|e| panic!("couldn't bind to port {}: {}", port, e));
-
-    let state_clone = state.clone();
-
-    tokio::spawn(async move {
-        listener_loop(listener, state_clone).await;
-    });
 
     if let Some(replica_of) = args_map.get("--replicaof") {
         let mut parts = replica_of.split_whitespace();
@@ -66,18 +60,20 @@ async fn main() {
         let mut master_stream = TokioTcpStream::connect(format!("{}:{}", host, master_port))
             .await
             .expect("couldn't connect to master");
-
-        let remaining_data = do_replication_handshake(&mut master_stream, port).await;
-        println!(
-            "remaining data: {}",
-            String::from_utf8_lossy(&remaining_data.to_vec())
-        );
-
         let state_clone = state.clone();
         task::spawn(async move {
+            let port = args_map.get("--port").map(|s| s.as_str()).unwrap_or("6379");
+            let remaining_data = do_replication_handshake(&mut master_stream, port).await;
+
             handle_replication_loop(master_stream, state_clone, remaining_data).await;
         });
     }
+
+    let state_clone = state.clone();
+
+    tokio::spawn(async move {
+        listener_loop(listener, state_clone).await;
+    });
 
     signal::ctrl_c().await.expect("failed to listen for ctrl_c");
     println!("Shutdown signal received, exiting.");
@@ -88,10 +84,13 @@ async fn handle_client(mut stream: TokioTcpStream, state: State) {
     let mut parser = Parser {};
     let mut exec = CommandExecutor {};
     let mut pending: Vec<u8> = Vec::new();
+    let (mut reader, raw_writer) = stream.into_split();
+    let writer = Arc::new(Mutex::new(raw_writer));
 
     loop {
         let mut buf = [0u8; 2048];
-        let n = match stream.read(&mut buf).await {
+
+        let n = match reader.read(&mut buf).await {
             Ok(0) | Err(_) => return, // connection closed or error
             Ok(n) => n,
         };
@@ -103,7 +102,7 @@ async fn handle_client(mut stream: TokioTcpStream, state: State) {
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let mut commands = parser.parse(text);
-                exec.execute(&mut commands, &mut stream, state.clone())
+                exec.execute(&mut commands, writer.clone(), state.clone())
                     .await;
             }
         }
@@ -144,10 +143,6 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
         .await
         .unwrap();
     let n = stream.read(&mut buf).await.unwrap();
-    println!(
-        "REPLCONF listening-port response: {}",
-        String::from_utf8_lossy(&buf[..n])
-    );
 
     // REPLCONF capa psync2
     stream
@@ -155,10 +150,6 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
         .await
         .unwrap();
     let n = stream.read(&mut buf).await.unwrap();
-    println!(
-        "REPLCONF capa response: {}",
-        String::from_utf8_lossy(&buf[..n])
-    );
 
     // PSYNC ? -1
     stream
@@ -203,6 +194,8 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
             }
         }
     }
+
+    println!("pednign: {}", String::from_utf8_lossy(&pending));
     return pending;
 }
 
@@ -214,26 +207,26 @@ async fn handle_replication_loop(
     let mut pending = remaining_data;
     let mut parser = Parser {};
     let mut exec = CommandExecutor {};
+    let (mut reader, mut raw_writer) = stream.into_split();
+    let writer = Arc::new(Mutex::new(raw_writer));
 
     loop {
-        let mut buf = [0u8; 4096];
-        let n = match stream.read(&mut buf).await {
+        while let Some(frame_end) = find_complete_frame(&pending) {
+            let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
+            if let Ok(text) = std::str::from_utf8(&frame_bytes) {
+                let mut commands = parser.parse(text);
+                println!("text: {}", text);
+                exec.execute(&mut commands, writer.clone(), state.clone())
+                    .await;
+                state.offset += frame_end;
+            }
+        }
+        let mut buf = [0u8; 512];
+        let n = match reader.read(&mut buf).await {
             Ok(n) => n,
             Err(_err) => 0,
         };
         pending.extend_from_slice(&buf[..n]);
-
-        while let Some(frame_end) = find_complete_frame(&pending) {
-            let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
-            if let Ok(text) = std::str::from_utf8(&frame_bytes) {
-                println!("inside replication loop: {}", text);
-                let mut commands = parser.parse(text);
-                exec.execute(&mut commands, &mut stream, state.clone())
-                    .await;
-                println!("offset: {} {}", frame_end, text);
-                state.offset += frame_end;
-            }
-        }
     }
 }
 

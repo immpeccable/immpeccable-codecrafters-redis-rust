@@ -73,7 +73,7 @@ impl Db {
         return String::from_utf8(string_buffer).unwrap();
     }
 
-    pub fn load(&mut self, state: State) -> Result<(), Error> {
+    pub async fn load(&mut self, state: State) -> Result<(), Error> {
         if let (Some(db_dir), Some(db_file)) = (state.db_dir, state.db_file_name) {
             let file = File::open(&Path::new(format!("{}/{}", db_dir, db_file).as_str()))?;
             let mut reader = BufReader::new(file);
@@ -91,8 +91,7 @@ impl Db {
                     0x00 => {
                         let hash_key = self.string_encoded(&mut reader);
                         let hash_value = self.string_encoded(&mut reader);
-                        println!("{} {}", hash_key, hash_value);
-                        let mut state_guard = state.shared_data.lock().unwrap();
+                        let mut state_guard = state.shared_data.lock().await;
                         state_guard.insert(
                             RespDataType::BulkString(hash_key),
                             ExpiringValue {
@@ -111,7 +110,7 @@ impl Db {
                         let hash_key = self.string_encoded(&mut reader);
                         let hash_value = self.string_encoded(&mut reader);
                         let expiration_time = UNIX_EPOCH + Duration::from_millis(ms);
-                        let mut state_guard = state.shared_data.lock().unwrap();
+                        let mut state_guard = state.shared_data.lock().await;
                         state_guard.insert(
                             RespDataType::BulkString(hash_key),
                             ExpiringValue {
@@ -130,7 +129,7 @@ impl Db {
                         let hash_key = self.string_encoded(&mut reader);
                         let hash_value = self.string_encoded(&mut reader);
                         let expiration_time = UNIX_EPOCH + Duration::from_secs(seconds.into());
-                        let mut state_guard = state.shared_data.lock().unwrap();
+                        let mut state_guard = state.shared_data.lock().await;
                         state_guard.insert(
                             RespDataType::BulkString(hash_key),
                             ExpiringValue {
