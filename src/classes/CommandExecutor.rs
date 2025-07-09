@@ -1,18 +1,21 @@
+use crate::classes::State::Replica;
 use crate::classes::{
     Constants::EMPTY_RDB_HEX_REPRESENTATION, ExpiringValue::ExpiringValue,
     RespDataType::RespDataType, State::State,
 };
 
 use hex;
+use tokio::io::AsyncReadExt;
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time;
 use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 
+use core::num;
 use std::sync::Arc;
-use std::{
-    io::{BufRead, BufReader, Error, Read, Seek, Write},
-    time::{Duration, Instant},
-};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 pub struct CommandExecutor {}
 
@@ -20,11 +23,12 @@ impl CommandExecutor {
     pub async fn execute(
         &mut self,
         commands: &mut RespDataType,
-        stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        reader: Arc<Mutex<OwnedReadHalf>>,
+        writer: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
     ) {
         match commands {
-            RespDataType::Array(v) => self.handle_commands(v, stream, state).await,
+            RespDataType::Array(v) => self.handle_commands(v, reader, writer, state).await,
             _ => unreachable!("shouldn't be else "),
         }
     }
@@ -32,47 +36,49 @@ impl CommandExecutor {
     async fn handle_commands(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        reader: Arc<Mutex<OwnedReadHalf>>,
+        mut writer: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
     ) {
         let first_command = &commands[0];
         match first_command {
             RespDataType::BulkString(bulk_str) => match bulk_str.to_uppercase().as_str() {
                 "PING" => {
-                    self.ping_command(commands, stream, state).await;
+                    self.ping_command(commands, writer, state).await;
                 }
                 "ECHO" => {
-                    self.echo_command(commands, stream).await;
+                    self.echo_command(commands, writer).await;
                 }
                 "SET" => {
-                    self.set_command(commands, stream, state).await;
+                    self.set_command(commands, writer, state).await;
                 }
                 "GET" => {
-                    self.get_command(commands, stream, state).await;
+                    self.get_command(commands, writer, state).await;
                 }
                 "CONFIG" => {
                     if let RespDataType::BulkString(bulk_config_second_string) = &commands[1] {
                         match bulk_config_second_string.as_str() {
-                            "GET" => self.config_get_command(commands, stream, state).await,
+                            "GET" => self.config_get_command(commands, writer, state).await,
                             _ => {}
                         }
                     }
                 }
                 "KEYS" => {
-                    self.keys_command(commands, stream, state).await;
+                    self.keys_command(commands, writer, state).await;
                 }
                 "INFO" => {
-                    self.info_command(commands, stream, state).await;
+                    self.info_command(commands, writer, state).await;
                 }
                 "REPLCONF" => {
-                    self.repl_conf_command(commands, stream, state).await;
+                    self.repl_conf_command(commands, writer, state, reader)
+                        .await;
                 }
 
                 "PSYNC" => {
-                    self.psync(stream, state).await;
+                    self.psync(reader, writer, state).await;
                 }
                 "WAIT" => {
-                    self.wait(commands, stream, state).await;
+                    self.wait(commands, writer, state).await;
                 }
                 _ => {}
             },
@@ -83,15 +89,85 @@ impl CommandExecutor {
     async fn wait(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        writer: Arc<Mutex<OwnedWriteHalf>>,
+        mut state: Arc<Mutex<State>>,
     ) {
-        stream
-            .lock()
-            .await
-            .write_all(format!(":{}\r\n", state.replicas.lock().await.len()).as_bytes())
-            .await
-            .unwrap();
+        let num = match commands.get(1) {
+            Some(RespDataType::BulkString(bs)) => bs.parse::<usize>().unwrap_or(0),
+            _ => 0,
+        };
+        let timeout_ms = match commands.get(2) {
+            Some(RespDataType::BulkString(bs)) => bs.parse::<u64>().unwrap_or(0),
+            _ => 0,
+        };
+
+        let target = state.lock().await.offset;
+        if target == 0 {
+            // If no commands have been sent, all replicas are considered caught up
+            let num_replicas = state.lock().await.replicas.len();
+            let mut w = writer.lock().await;
+            w.write_all(format!(":{}\r\n", num_replicas).as_bytes())
+                .await
+                .unwrap();
+            return;
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut getack_sent = false; // Track if we've sent GETACK commands
+
+        loop {
+            // Send GETACK commands only once
+            if !getack_sent {
+                let mut replicas_to_check = Vec::new();
+                {
+                    let guard = state.lock().await;
+                    for replica in &guard.replicas {
+                        if replica.last_ack < target.try_into().unwrap() {
+                            // Clone the writer to send GETACK outside the lock
+                            replicas_to_check.push(replica.writer.clone());
+                        }
+                    }
+                }
+
+                // Send GETACK commands outside the state lock
+                for replica_writer in &replicas_to_check {
+                    let cmd = "*3\r\n\
+                         $8\r\nREPLCONF\r\n\
+                         $6\r\nGETACK\r\n\
+                         $1\r\n*\r\n"
+                        .as_bytes();
+                    println!("Sending GETACK command: {}", String::from_utf8_lossy(cmd));
+                    if let Err(e) = replica_writer.lock().await.write_all(cmd).await {
+                        println!("Failed to send GETACK: {}", e);
+                    }
+                }
+                getack_sent = true;
+            }
+
+            // Just check current ack values - the replication loop will handle responses
+            let mut acks = 0;
+            {
+                let guard = state.lock().await;
+                for replica in &guard.replicas {
+                    println!("Replica last_ack: {}, target: {}", replica.last_ack, target);
+                    if replica.last_ack >= target.try_into().unwrap() {
+                        acks += 1;
+                    }
+                }
+            }
+            println!("Current acks: {}, required: {}", acks, num);
+
+            if acks >= num || Instant::now() >= deadline {
+                let mut w = writer.lock().await;
+                w.write_all(format!(":{}\r\n", acks).as_bytes())
+                    .await
+                    .unwrap();
+                break;
+            }
+
+            // back off a bit before polling again
+            time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     async fn echo_command(
@@ -117,9 +193,11 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        state: Arc<Mutex<State>>,
+        reader: Arc<Mutex<OwnedReadHalf>>,
     ) {
         if let RespDataType::BulkString(repl_conf_second) = &commands[1] {
+            println!("REPLCONF command received: {}", repl_conf_second);
             match repl_conf_second.to_uppercase().as_str() {
                 "CAPA" => {
                     stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
@@ -128,30 +206,60 @@ impl CommandExecutor {
                     stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
                 }
                 "GETACK" => {
-                    stream
-                        .lock()
-                        .await
-                        .write_all(
-                            format!(
-                                "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
-                                state.offset.to_string().len(),
-                                state.offset
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
+                    println!("Master received GETACK command, responding with ACK");
+                    let offset = state.lock().await.offset;
+                    let response = format!(
+                        "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                        offset.to_string().len(),
+                        offset
+                    );
+                    println!("Sending ACK response: {}", response);
+                    println!("Response bytes: {:?}", response.as_bytes());
+                    let mut writer = stream.lock().await;
+                    let result = writer.write_all(response.as_bytes()).await;
+                    match result {
+                        Ok(_) => {
+                            println!("ACK response sent successfully");
+                            // Try to flush the stream
+                            if let Err(e) = writer.flush().await {
+                                println!("Failed to flush stream: {}", e);
+                            }
+                        }
+                        Err(e) => println!("Failed to send ACK response: {}", e),
+                    }
                 }
+                "ACK" => {
+                    // This is a response from a replica to a GETACK command
+                    if let RespDataType::BulkString(offset_str) = &commands[2] {
+                        if let Ok(offset) = offset_str.parse::<u64>() {
+                            println!("Received ACK with offset: {}", offset);
+                            // Find the replica that sent this ACK and update its last_ack
+                            let mut guard = state.lock().await;
+                            for replica in &mut guard.replicas {
+                                // Match by reader connection to identify which replica sent this ACK
+                                if Arc::ptr_eq(&replica.reader, &reader) {
+                                    replica.last_ack = offset;
+                                    println!("Updated replica last_ack to: {}", offset);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 _ => {}
             }
         }
     }
 
-    async fn psync(&mut self, mut stream: Arc<Mutex<OwnedWriteHalf>>, state: State) {
-        // split into a read half (for your handshake & loop) and a write half (which is Clone)
-
+    async fn psync(
+        &mut self,
+        reader: Arc<Mutex<OwnedReadHalf>>,
+        mut writer: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
+    ) {
         let header = format!("FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0");
-        stream
+        writer
             .lock()
             .await
             .write_all(format!("+{}\r\n", header).as_bytes())
@@ -160,24 +268,27 @@ impl CommandExecutor {
 
         // send empty-RDB payload
         let dump = hex::decode(EMPTY_RDB_HEX_REPRESENTATION).unwrap();
-        stream
+        writer
             .lock()
             .await
             .write_all(format!("${}\r\n", dump.len()).as_bytes())
             .await
             .unwrap();
-        stream.lock().await.write_all(&dump).await.unwrap();
-
-        state.replicas.lock().await.push(stream.clone());
+        writer.lock().await.write_all(&dump).await.unwrap();
+        state.lock().await.replicas.push(Replica {
+            reader: reader,
+            writer: writer,
+            last_ack: 0,
+        });
     }
 
     async fn ping_command(
         &mut self,
         _: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        state: Arc<Mutex<State>>,
     ) {
-        if state.role == "master" {
+        if state.lock().await.role == "master" {
             stream.lock().await.write_all(b"+PONG\r\n").await.unwrap();
         }
     }
@@ -186,13 +297,13 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        state: Arc<Mutex<State>>,
     ) {
         let config_key = &commands[2];
         if let RespDataType::BulkString(config_key) = config_key {
             match config_key.to_uppercase().as_str() {
                 "DIR" => {
-                    if let Some(db_dir) = state.db_dir {
+                    if let Some(db_dir) = &mut state.lock().await.db_dir {
                         let response = format!(
                             "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
                             config_key.len(),
@@ -209,7 +320,7 @@ impl CommandExecutor {
                     }
                 }
                 "DBFILENAME" => {
-                    if let Some(db_file_name) = state.db_file_name {
+                    if let Some(db_file_name) = &mut state.lock().await.db_file_name {
                         let response = format!(
                             "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
                             config_key.len(),
@@ -236,7 +347,7 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        mut state: Arc<Mutex<State>>,
     ) {
         let (key, value) = (commands[1].clone(), commands[2].clone());
         let mut hashmap_value = ExpiringValue {
@@ -247,6 +358,9 @@ impl CommandExecutor {
         if commands.len() > 3 {
             options = Some(&commands[3..]);
         }
+
+        let mut guard = state.lock().await;
+
         if let Some(op) = options {
             let RespDataType::BulkString(option_type) = &op[0] else {
                 unreachable!("protocol invariant violated: expected BulkString");
@@ -265,62 +379,58 @@ impl CommandExecutor {
                 _ => {}
             }
         }
+        println!("inserted hello wtf");
 
-        println!("received set command");
+        guard.shared_data.insert(key, hashmap_value);
 
-        // Store the data first
-        {
-            let mut state_guard = state.shared_data.lock().await;
-            state_guard.insert(key, hashmap_value);
-        }
+        println!("after insert");
 
-        if state.role == "master" {
+        if guard.role == "master" {
             stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
         }
 
+        println!("{} {}", guard.role, guard.replicas.len());
+
         let payload = self.convert_array_to_resp(commands.clone());
 
-        let clients = {
-            let mut guard = state.replicas.lock().await; // guard: MutexGuard<_, Vec<TcpStream>>
-            println!("propagating to the clients {}", guard.len());
-
-            std::mem::take(&mut *guard) // guard’in içindeki Vec’i al, yerine boş Vec koy
-        }; // guard düşer, kilit açılır
-
-        // 2. Her client’a yaz ve sadece başarılı olanları topla
-        let mut kept = Vec::with_capacity(clients.len());
+        let clients = &mut guard.replicas;
+        println!(" client length: {}", clients.len());
+        let mut kept = Vec::new();
+        let payload_bytes = payload.as_bytes();
+        let number_of_bytes_broadcasted = payload_bytes.len();
         for mut client in clients {
             if client
+                .writer
                 .lock()
                 .await
-                .write_all(payload.as_bytes())
+                .write_all(payload_bytes)
                 .await
                 .is_ok()
             {
-                kept.push(client);
+                kept.push(client.clone());
             }
         }
-
-        // 3. Yeniden kilidi al ve filtrelenmiş Vec’i geri yaz
-        let mut guard = state.replicas.lock().await;
-        *guard = kept; // MutexGuard’in işaret ettiği Vec’e atama
-                       // guard düşer, kilit tekrar açılır
+        if guard.role == "master" {
+            guard.offset += number_of_bytes_broadcasted;
+        }
+        guard.replicas = kept;
     }
 
     async fn get_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        state: Arc<Mutex<State>>,
     ) {
+        println!("get command");
+        let guard = state.lock().await;
         let key = commands[1].clone();
-        let value = {
-            let state_guard = state.shared_data.lock().await;
-            state_guard.get(&key).cloned()
-        };
+        let value = guard.shared_data.get(&key).cloned();
+        println!("value fetched");
 
         match value {
             Some(v) => {
+                println!("v :{:?}", v.expiration_timestamp);
                 if let Some(expiration_timestamp) = v.expiration_timestamp {
                     if Instant::now() > expiration_timestamp {
                         return stream.lock().await.write_all(b"$-1\r\n").await.unwrap();
@@ -330,6 +440,7 @@ impl CommandExecutor {
                     unreachable!("protocol invariant violated: expected BulkString");
                 };
                 let bulk_response = self.convert_bulk_string_to_resp(&value);
+                println!("bulk response: {}", bulk_response);
                 return stream
                     .lock()
                     .await
@@ -345,13 +456,13 @@ impl CommandExecutor {
         &mut self,
         commands: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        state: Arc<Mutex<State>>,
     ) {
+        let guard = state.lock().await;
         let matching_keys = {
-            let shared_guard = state.shared_data.lock().await;
             if let RespDataType::BulkString(regex_match) = &commands[1] {
                 let mut keys: Vec<String> = Vec::new();
-                for key in shared_guard.keys() {
+                for key in guard.shared_data.keys() {
                     if let RespDataType::BulkString(key) = key {
                         let parts: Vec<&str> = regex_match.split("*").collect();
                         if key.starts_with(parts[0]) && key.ends_with(parts[1]) {
@@ -381,12 +492,12 @@ impl CommandExecutor {
         &mut self,
         _commands: &mut Vec<RespDataType>,
         mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        state: State,
+        state: Arc<Mutex<State>>,
     ) {
         stream.lock().await
             .write_all(
                 &self
-                    .convert_bulk_string_to_resp(&String::from(format!("role:{}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb", state.role)))
+                    .convert_bulk_string_to_resp(&String::from(format!("role:{}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb", state.lock().await.role)))
                     .as_bytes(),
             )
             .await

@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::OwnedReadHalf;
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream};
 use tokio::sync::Mutex;
 use tokio::{signal, task};
@@ -14,16 +16,14 @@ use classes::{CommandExecutor::CommandExecutor, Db::Db, Parser::Parser, State::S
 #[tokio::main]
 async fn main() {
     // bootstrap shared state
-    let shared = Arc::new(Mutex::new(HashMap::new()));
     let mut state = State {
-        shared_data: shared,
+        shared_data: HashMap::new(),
         db_dir: None,
         db_file_name: None,
         role: "master".to_string(),
         master_host: None,
         master_port: None,
-        master_stream: None,
-        replicas: Arc::new(Mutex::new(Vec::new())),
+        replicas: Vec::new(),
         offset: 0,
     };
 
@@ -40,7 +40,7 @@ async fn main() {
     state.db_dir = args_map.get("--dir").cloned();
     state.db_file_name = args_map.get("--dbfilename").cloned();
     if state.db_dir.is_some() && state.db_file_name.is_some() {
-        let _ = Db {}.load(state.clone()).await;
+        let _ = Db {}.load(&mut state).await;
     }
 
     let port = args_map.get("--port").map(|s| s.as_str()).unwrap_or("6379");
@@ -49,30 +49,41 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("couldn't bind to port {}: {}", port, e));
 
+    let shared_state = Arc::new(Mutex::new(state.clone()));
+    let shared_state_for_listener = shared_state.clone();
+
     if let Some(replica_of) = args_map.get("--replicaof") {
         let mut parts = replica_of.split_whitespace();
         let host = parts.next().expect("`--replicaof` requires `host port`");
         let master_port = parts.next().expect("`--replicaof` requires `host port`");
-        state.role = "slave".to_string();
-        state.master_host = Some(host.to_string());
-        state.master_port = Some(master_port.to_string());
+        let state_inside_replica = shared_state.clone();
+        let mut guard = state_inside_replica.lock().await;
+        guard.role = "slave".to_string();
+        guard.master_host = Some(host.to_string());
+        guard.master_port = Some(master_port.to_string());
 
         let mut master_stream = TokioTcpStream::connect(format!("{}:{}", host, master_port))
             .await
             .expect("couldn't connect to master");
-        let state_clone = state.clone();
+
         task::spawn(async move {
             let port = args_map.get("--port").map(|s| s.as_str()).unwrap_or("6379");
             let remaining_data = do_replication_handshake(&mut master_stream, port).await;
+            let (reader, writer) = master_stream.into_split();
+            let shared_reader = Arc::new(Mutex::new(reader));
+            let shared_writer = Arc::new(Mutex::new(writer));
 
-            handle_replication_loop(master_stream, state_clone, remaining_data).await;
+            handle_replication_loop(
+                shared_reader,
+                shared_writer,
+                shared_state.clone(),
+                remaining_data,
+            )
+            .await;
         });
     }
-
-    let state_clone = state.clone();
-
     tokio::spawn(async move {
-        listener_loop(listener, state_clone).await;
+        listener_loop(listener, shared_state_for_listener).await;
     });
 
     signal::ctrl_c().await.expect("failed to listen for ctrl_c");
@@ -80,17 +91,18 @@ async fn main() {
 }
 
 // common client‐handling loop (for master clients only)
-async fn handle_client(mut stream: TokioTcpStream, state: State) {
+async fn handle_client(stream: TokioTcpStream, state: Arc<Mutex<State>>) {
     let mut parser = Parser {};
     let mut exec = CommandExecutor {};
     let mut pending: Vec<u8> = Vec::new();
-    let (mut reader, raw_writer) = stream.into_split();
+    let (mut raw_reader, raw_writer) = stream.into_split();
     let writer = Arc::new(Mutex::new(raw_writer));
+    let reader = Arc::new(Mutex::new(raw_reader));
 
     loop {
         let mut buf = [0u8; 2048];
 
-        let n = match reader.read(&mut buf).await {
+        let n = match reader.lock().await.read(&mut buf).await {
             Ok(0) | Err(_) => return, // connection closed or error
             Ok(n) => n,
         };
@@ -102,14 +114,14 @@ async fn handle_client(mut stream: TokioTcpStream, state: State) {
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let mut commands = parser.parse(text);
-                exec.execute(&mut commands, writer.clone(), state.clone())
+                exec.execute(&mut commands, reader.clone(), writer.clone(), state.clone())
                     .await;
             }
         }
     }
 }
 
-async fn listener_loop(listener: TokioTcpListener, state: State) {
+async fn listener_loop(listener: TokioTcpListener, state: Arc<Mutex<State>>) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
@@ -142,14 +154,14 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
         )
         .await
         .unwrap();
-    let n = stream.read(&mut buf).await.unwrap();
+    let __n = stream.read(&mut buf).await.unwrap();
 
     // REPLCONF capa psync2
     stream
         .write_all(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
         .await
         .unwrap();
-    let n = stream.read(&mut buf).await.unwrap();
+    let ___n = stream.read(&mut buf).await.unwrap();
 
     // PSYNC ? -1
     stream
@@ -200,15 +212,14 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
 }
 
 async fn handle_replication_loop(
-    mut stream: TokioTcpStream,
-    mut state: State,
+    reader: Arc<Mutex<OwnedReadHalf>>,
+    writer: Arc<Mutex<OwnedWriteHalf>>,
+    mut state: Arc<Mutex<State>>,
     remaining_data: Vec<u8>,
 ) {
     let mut pending = remaining_data;
     let mut parser = Parser {};
     let mut exec = CommandExecutor {};
-    let (mut reader, mut raw_writer) = stream.into_split();
-    let writer = Arc::new(Mutex::new(raw_writer));
 
     loop {
         while let Some(frame_end) = find_complete_frame(&pending) {
@@ -216,13 +227,14 @@ async fn handle_replication_loop(
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let mut commands = parser.parse(text);
                 println!("text: {}", text);
-                exec.execute(&mut commands, writer.clone(), state.clone())
+                exec.execute(&mut commands, reader.clone(), writer.clone(), state.clone())
                     .await;
-                state.offset += frame_end;
+                println!("frame end: {} {}", frame_end, frame_bytes.len());
+                state.lock().await.offset += frame_end;
             }
         }
         let mut buf = [0u8; 512];
-        let n = match reader.read(&mut buf).await {
+        let n = match reader.lock().await.read(&mut buf).await {
             Ok(n) => n,
             Err(_err) => 0,
         };

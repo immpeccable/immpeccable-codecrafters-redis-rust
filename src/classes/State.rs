@@ -1,20 +1,26 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
-    net::{tcp::OwnedWriteHalf, TcpStream},
+    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
     sync::Mutex,
 };
 
 use crate::classes::{ExpiringValue::ExpiringValue, RespDataType::RespDataType};
 
+#[derive(Clone)]
+pub struct Replica {
+    pub reader: Arc<Mutex<OwnedReadHalf>>,
+    pub writer: Arc<Mutex<OwnedWriteHalf>>,
+    pub last_ack: u64,
+}
+
 pub struct State {
     pub db_file_name: Option<String>,
     pub db_dir: Option<String>,
-    pub shared_data: Arc<Mutex<HashMap<RespDataType, ExpiringValue>>>,
+    pub shared_data: HashMap<RespDataType, ExpiringValue>,
     pub role: String,
     pub master_host: Option<String>,
     pub master_port: Option<String>,
-    pub master_stream: Option<TcpStream>,
-    pub replicas: Arc<Mutex<Vec<Arc<Mutex<OwnedWriteHalf>>>>>,
+    pub replicas: Vec<Replica>,
     pub offset: usize,
 }
 
@@ -27,7 +33,6 @@ impl Clone for State {
             role: self.role.clone(),
             master_host: self.master_host.clone(),
             master_port: self.master_port.clone(),
-            master_stream: None,
             replicas: self.replicas.clone(),
             offset: self.offset,
         }
