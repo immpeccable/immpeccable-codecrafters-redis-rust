@@ -95,7 +95,7 @@ async fn handle_client(stream: TokioTcpStream, state: Arc<Mutex<State>>) {
     let mut parser = Parser {};
     let mut exec = CommandExecutor {};
     let mut pending: Vec<u8> = Vec::new();
-    let (mut raw_reader, raw_writer) = stream.into_split();
+    let (raw_reader, raw_writer) = stream.into_split();
     let writer = Arc::new(Mutex::new(raw_writer));
     let reader = Arc::new(Mutex::new(raw_reader));
 

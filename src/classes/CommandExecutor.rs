@@ -55,6 +55,9 @@ impl CommandExecutor {
                 "GET" => {
                     self.get_command(commands, writer, state).await;
                 }
+                "TYPE" => {
+                    self.type_command(commands, writer, state).await;
+                }
                 "CONFIG" => {
                     if let RespDataType::BulkString(bulk_config_second_string) = &commands[1] {
                         match bulk_config_second_string.as_str() {
@@ -136,7 +139,6 @@ impl CommandExecutor {
                          $6\r\nGETACK\r\n\
                          $1\r\n*\r\n"
                         .as_bytes();
-                    println!("Sending GETACK command: {}", String::from_utf8_lossy(cmd));
                     if let Err(e) = replica_writer.lock().await.write_all(cmd).await {
                         println!("Failed to send GETACK: {}", e);
                     }
@@ -144,18 +146,15 @@ impl CommandExecutor {
                 getack_sent = true;
             }
 
-            // Just check current ack values - the replication loop will handle responses
             let mut acks = 0;
             {
                 let guard = state.lock().await;
                 for replica in &guard.replicas {
-                    println!("Replica last_ack: {}, target: {}", replica.last_ack, target);
                     if replica.last_ack >= target.try_into().unwrap() {
                         acks += 1;
                     }
                 }
             }
-            println!("Current acks: {}, required: {}", acks, num);
 
             if acks >= num || Instant::now() >= deadline {
                 let mut w = writer.lock().await;
@@ -414,6 +413,31 @@ impl CommandExecutor {
             guard.offset += number_of_bytes_broadcasted;
         }
         guard.replicas = kept;
+    }
+
+    async fn type_command(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
+    ) {
+        let guard = state.lock().await;
+        let key = commands[1].clone();
+        let value = guard.shared_data.get(&key).cloned();
+
+        match value {
+            Some(v) => {
+                println!("v :{:?}", v.expiration_timestamp);
+                if let Some(expiration_timestamp) = v.expiration_timestamp {
+                    if Instant::now() > expiration_timestamp {
+                        return stream.lock().await.write_all(b"+none\r\n").await.unwrap();
+                    }
+                }
+
+                return stream.lock().await.write_all(b"+string\r\n").await.unwrap();
+            }
+            None => stream.lock().await.write_all(b"+none\r\n").await.unwrap(),
+        }
     }
 
     async fn get_command(
