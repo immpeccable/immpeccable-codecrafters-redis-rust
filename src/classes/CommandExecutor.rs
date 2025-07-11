@@ -346,14 +346,14 @@ impl CommandExecutor {
         }
     }
 
-    fn populate_entries(&mut self, values: Vec<RespDataType>) -> HashMap<String, String> {
+    fn populate_entries(
+        &mut self,
+        values: Vec<RespDataType>,
+        current_id: &String,
+    ) -> HashMap<String, String> {
         let mut res: HashMap<String, String> = HashMap::new();
-
-        if let RespDataType::BulkString(id) = &values[0] {
-            res.insert("id".to_string(), id.clone());
-        }
-
-        let mut i = 1;
+        res.insert("id".to_string(), current_id.clone());
+        let mut i = 0;
         while i < values.len() {
             let (key, value) = (&values[i], &values[i + 1]);
 
@@ -363,6 +363,40 @@ impl CommandExecutor {
             i += 2;
         }
         res
+    }
+
+    fn generate_stream_id(&mut self, latest_id: Option<&String>, current_id: String) -> String {
+        let parts: Vec<&str> = current_id.split("-").collect();
+        let (miliseconds_time, sequence_number) = (parts[0], parts[1]);
+        if miliseconds_time == "*" && sequence_number == "*" {
+            return current_id;
+        } else if sequence_number == "*" {
+            match latest_id {
+                Some(latest_id) => {
+                    let latest_id_parts: Vec<&str> = latest_id.split("-").collect();
+                    let last_miliseconds_time = latest_id_parts[0];
+                    let last_sequence_number = latest_id_parts[1];
+
+                    let mut current_sequence_number = 0;
+                    if miliseconds_time <= last_miliseconds_time {
+                        current_sequence_number =
+                            last_sequence_number.parse::<u32>().unwrap() + 1u32
+                    }
+
+                    return format!("{}-{}", miliseconds_time, current_sequence_number);
+                }
+                None => {
+                    let mut sequence_number = "0";
+                    if miliseconds_time == "0" {
+                        sequence_number = "1";
+                    }
+                    println!("sequence number: {}", sequence_number);
+                    return format!("{}-{}", miliseconds_time, sequence_number);
+                }
+            }
+        } else {
+            return current_id;
+        }
     }
 
     async fn validate_stream_entry(
@@ -400,11 +434,9 @@ impl CommandExecutor {
         stream: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
     ) {
-        if let (RespDataType::BulkString(key), RespDataType::BulkString(current_id)) =
+        if let (RespDataType::BulkString(key), RespDataType::BulkString(mut current_id)) =
             (commands[1].clone(), commands[2].clone())
         {
-            let entry = self.populate_entries(commands[2..].to_vec());
-
             let mut guard = state.lock().await;
             let stream_data = &mut guard.stream_data;
 
@@ -414,6 +446,10 @@ impl CommandExecutor {
             if let Some(stream_vector) = stream_vector {
                 latest_entry_id = stream_vector.last().unwrap().get(&"id".to_string())
             }
+
+            current_id = self.generate_stream_id(latest_entry_id, current_id);
+
+            let entry = self.populate_entries(commands[3..].to_vec(), &current_id);
 
             if self
                 .validate_stream_entry(stream.clone(), latest_entry_id, current_id.clone())
