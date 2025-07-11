@@ -645,7 +645,7 @@ impl CommandExecutor {
 
             loop {
                 // Check if we have new data
-                let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+                let mut results: Vec<(String, Vec<Vec<String>>)> = Vec::new();
                 let mut i = 0;
                 let stream_state = &state.lock().await.stream_data;
 
@@ -691,7 +691,7 @@ impl CommandExecutor {
                             None => {}
                         }
                         if !result_vector_for_stream.is_empty() {
-                            results.insert(stream_key.clone(), result_vector_for_stream);
+                            results.push((stream_key.clone(), result_vector_for_stream));
                         }
                     }
                     i += 2;
@@ -738,7 +738,7 @@ impl CommandExecutor {
         }
 
         // Non-blocking or timed out - check for existing data
-        let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        let mut results: Vec<(String, Vec<Vec<String>>)> = Vec::new();
         let mut i = 0;
         let stream_state = &state.lock().await.stream_data;
 
@@ -784,7 +784,7 @@ impl CommandExecutor {
                     None => {}
                 }
                 if !result_vector_for_stream.is_empty() {
-                    results.insert(stream_key.clone(), result_vector_for_stream);
+                    results.push((stream_key.clone(), result_vector_for_stream));
                 }
             }
             i += 2;
