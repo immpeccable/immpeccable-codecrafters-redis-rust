@@ -17,7 +17,7 @@ pub struct State {
     pub db_file_name: Option<String>,
     pub db_dir: Option<String>,
     pub shared_data: HashMap<RespDataType, ExpiringValue>,
-    pub stream_data: HashMap<String, Vec<HashMap<String, String>>>,
+    pub stream_data: HashMap<String, Vec<Vec<(String, String)>>>,
     pub role: String,
     pub master_host: Option<String>,
     pub master_port: Option<String>,

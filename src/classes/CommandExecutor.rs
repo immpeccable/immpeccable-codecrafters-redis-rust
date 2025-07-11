@@ -356,15 +356,15 @@ impl CommandExecutor {
         &mut self,
         values: Vec<RespDataType>,
         current_id: &String,
-    ) -> HashMap<String, String> {
-        let mut res: HashMap<String, String> = HashMap::new();
-        res.insert("id".to_string(), current_id.clone());
+    ) -> Vec<(String, String)> {
+        let mut res: Vec<(String, String)> = Vec::new();
+        res.push(("id".to_string(), current_id.clone()));
         let mut i = 0;
         while i < values.len() {
             let (key, value) = (&values[i], &values[i + 1]);
 
             if let (RespDataType::BulkString(key), RespDataType::BulkString(value)) = (key, value) {
-                res.insert(key.clone(), value.clone());
+                res.push((key.clone(), value.clone()));
             }
             i += 2;
         }
@@ -456,7 +456,14 @@ impl CommandExecutor {
 
             let mut latest_entry_id = None;
             if let Some(stream_vector) = stream_vector {
-                latest_entry_id = stream_vector.last().unwrap().get(&"id".to_string())
+                if let Some(last_entry) = stream_vector.last() {
+                    for (k, v) in last_entry {
+                        if k == "id" {
+                            latest_entry_id = Some(v);
+                            break;
+                        }
+                    }
+                }
             }
 
             current_id = self.generate_stream_id(latest_entry_id, current_id);
@@ -509,12 +516,19 @@ impl CommandExecutor {
 
             match stream_vector {
                 Some(vec) => {
-                    let mut result: Vec<&HashMap<String, String>> = Vec::new();
+                    let mut result: Vec<&Vec<(String, String)>> = Vec::new();
                     for entry in vec {
-                        if let Some(entry_id) = entry.get(&"id".to_string()) {
+                        let mut entry_id = None;
+                        for (k, v) in entry {
+                            if k == "id" {
+                                entry_id = Some(v);
+                                break;
+                            }
+                        }
+                        if let Some(entry_id) = entry_id {
                             println!("entry id: {} {} {}", entry_id, start, end);
-                            if start <= *entry_id {
-                                if *entry_id <= end || end == "+" {
+                            if start.as_str() <= entry_id.as_str() {
+                                if entry_id.as_str() <= end.as_str() || end == "+" {
                                     println!("added");
                                     result.push(entry);
                                 } else {
@@ -529,7 +543,7 @@ impl CommandExecutor {
                         result_resp_string.push_str("*2\r\n");
                         let mut id = String::new();
                         let mut keys_values_except_id: Vec<RespDataType> = Vec::new();
-                        for (key, value) in entry.into_iter() {
+                        for (key, value) in entry {
                             if key == "id" {
                                 id = value.clone();
                             } else {
@@ -589,10 +603,17 @@ impl CommandExecutor {
                 let stream_vector = stream_state.get(&stream_key);
                 match stream_vector {
                     Some(stream_vector) => {
-                        let mut valid_entries: Vec<&HashMap<String, String>> = Vec::new();
+                        let mut valid_entries: Vec<&Vec<(String, String)>> = Vec::new();
                         for entry in stream_vector {
-                            if let Some(entry_id) = entry.get(&"id".to_string()) {
-                                if *entry_id > exclusive_start {
+                            let mut entry_id = None;
+                            for (k, v) in entry {
+                                if k == "id" {
+                                    entry_id = Some(v);
+                                    break;
+                                }
+                            }
+                            if let Some(entry_id) = entry_id {
+                                if entry_id.as_str() > exclusive_start.as_str() {
                                     valid_entries.push(entry);
                                 }
                             }
@@ -600,7 +621,7 @@ impl CommandExecutor {
 
                         for entry in valid_entries {
                             let mut result_vec_for_entry = Vec::new();
-                            for (key, value) in entry.into_iter() {
+                            for (key, value) in entry {
                                 if key != "id" {
                                     result_vec_for_entry.push(key.clone());
                                 }
