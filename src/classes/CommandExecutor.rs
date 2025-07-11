@@ -14,6 +14,7 @@ use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 
 use core::num;
 use std::collections::HashMap;
+use std::result;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -642,9 +643,15 @@ impl CommandExecutor {
                     }
                     None => {}
                 }
-                results.insert(stream_key.clone(), result_vector_for_stream);
+                if !result_vector_for_stream.is_empty() {
+                    results.insert(stream_key.clone(), result_vector_for_stream);
+                }
             }
             i += 2;
+        }
+
+        if results.is_empty() {
+            return stream.lock().await.write_all(b"$-1\r\n").await.unwrap();
         }
 
         let mut result_resp_string = format!("*{}\r\n", results.len());
@@ -665,7 +672,6 @@ impl CommandExecutor {
                 );
             }
         }
-        println!("{}", result_resp_string);
         stream
             .lock()
             .await
