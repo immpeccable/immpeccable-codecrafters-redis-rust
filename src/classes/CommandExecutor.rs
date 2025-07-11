@@ -567,13 +567,23 @@ impl CommandExecutor {
         let stream_state = &mut state.lock().await.stream_data;
         let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
         let mut i = 0;
-        while i < stream_keys_and_starts.len() {
+        let mut restructured_keys_and_starts = Vec::new();
+        let half = stream_keys_and_starts.len() / 2;
+
+        let mut j = 0;
+        while j < half {
+            restructured_keys_and_starts.push(stream_keys_and_starts[j].clone());
+            restructured_keys_and_starts.push(stream_keys_and_starts[j + half].clone());
+            j += 1
+        }
+
+        while i < restructured_keys_and_starts.len() {
             if let (
                 RespDataType::BulkString(stream_key),
                 RespDataType::BulkString(exclusive_start),
             ) = (
-                stream_keys_and_starts[i].clone(),
-                stream_keys_and_starts[i + 1].clone(),
+                restructured_keys_and_starts[i].clone(),
+                restructured_keys_and_starts[i + 1].clone(),
             ) {
                 let mut result_vector_for_stream: Vec<Vec<String>> = Vec::new();
                 let stream_vector = stream_state.get(&stream_key);
