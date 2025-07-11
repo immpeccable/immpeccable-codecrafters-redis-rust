@@ -577,12 +577,12 @@ impl CommandExecutor {
         state: Arc<Mutex<State>>,
     ) {
         let mut block_time = 0u64;
-        if let RespDataType::BulkString(second_command) = &commands[2] {
+        if let RespDataType::BulkString(second_command) = &commands[1] {
             if second_command.to_uppercase() == "BLOCK" {
-                if let RespDataType::BulkString(block_time_string) = &commands[3] {
+                if let RespDataType::BulkString(block_time_string) = &commands[2] {
                     block_time = block_time_string.parse::<u64>().unwrap();
                 }
-                commands.drain(2..4);
+                commands.drain(1..3);
                 sleep(Duration::from_millis(block_time)).await;
             }
         }
