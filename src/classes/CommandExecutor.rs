@@ -349,7 +349,11 @@ impl CommandExecutor {
     fn populate_entries(&mut self, values: Vec<RespDataType>) -> HashMap<String, String> {
         let mut res: HashMap<String, String> = HashMap::new();
 
-        let mut i = 0;
+        if let RespDataType::BulkString(id) = &values[0] {
+            res.insert("id".to_string(), id.clone());
+        }
+
+        let mut i = 1;
         while i < values.len() {
             let (key, value) = (&values[i], &values[i + 1]);
 
@@ -361,27 +365,68 @@ impl CommandExecutor {
         res
     }
 
+    async fn validate_stream_entry(
+        &mut self,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        latest_entry_id: Option<&String>,
+        current_entry_id: String,
+    ) -> bool {
+        if current_entry_id == "0-0" {
+            stream
+                .lock()
+                .await
+                .write_all(b"-ERR The ID specified in XADD must be greater than 0-0\r\n")
+                .await
+                .unwrap();
+            return false;
+        } else if let Some(latest_entry_id) = latest_entry_id {
+            if current_entry_id <= *latest_entry_id {
+                stream
+                .lock()
+                .await
+                .write_all(b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n")
+                .await
+                .unwrap();
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     async fn xadd(
         &mut self,
         commands: &mut Vec<RespDataType>,
         stream: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
     ) {
-        if let (RespDataType::BulkString(key), RespDataType::BulkString(id)) =
+        if let (RespDataType::BulkString(key), RespDataType::BulkString(current_id)) =
             (commands[1].clone(), commands[2].clone())
         {
-            let entry = self.populate_entries(commands[3..].to_vec());
+            let entry = self.populate_entries(commands[2..].to_vec());
 
             let mut guard = state.lock().await;
             let stream_data = &mut guard.stream_data;
 
-            stream_data.entry(key).or_insert_with(Vec::new).push(entry);
-            stream
-                .lock()
+            let stream_vector = stream_data.get(&key);
+
+            let mut latest_entry_id = None;
+            if let Some(stream_vector) = stream_vector {
+                latest_entry_id = stream_vector.last().unwrap().get(&"id".to_string())
+            }
+
+            if self
+                .validate_stream_entry(stream.clone(), latest_entry_id, current_id.clone())
                 .await
-                .write_all(self.convert_bulk_string_to_resp(&id).as_bytes())
-                .await
-                .unwrap();
+            {
+                stream_data.entry(key).or_insert_with(Vec::new).push(entry);
+                stream
+                    .lock()
+                    .await
+                    .write_all(self.convert_bulk_string_to_resp(&current_id).as_bytes())
+                    .await
+                    .unwrap();
+            }
         }
     }
 
@@ -485,7 +530,7 @@ impl CommandExecutor {
                 return stream.lock().await.write_all(b"+string\r\n").await.unwrap();
             }
             None => match stream_value {
-                Some(str_val) => stream.lock().await.write_all(b"+stream\r\n").await.unwrap(),
+                Some(_stream_value) => stream.lock().await.write_all(b"+stream\r\n").await.unwrap(),
                 None => stream.lock().await.write_all(b"+none\r\n").await.unwrap(),
             },
         }
