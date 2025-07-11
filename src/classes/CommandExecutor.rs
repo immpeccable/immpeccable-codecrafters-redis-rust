@@ -623,6 +623,7 @@ impl CommandExecutor {
                 );
             }
         }
+        println!("{}", result_resp_string);
         stream
             .lock()
             .await
