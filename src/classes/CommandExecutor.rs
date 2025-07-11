@@ -612,6 +612,7 @@ impl CommandExecutor {
             result_resp_string.push_str(&self.convert_bulk_string_to_resp(&rk));
             result_resp_string.push_str(&format!("*{}\r\n", rv.len()));
             for entry in rv {
+                result_resp_string.push_str("*2\r\n");
                 result_resp_string.push_str(&self.convert_bulk_string_to_resp(&entry[0]));
                 result_resp_string.push_str(
                     &&self.convert_array_to_resp(
