@@ -15,7 +15,6 @@ use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 use core::num;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct CommandExecutor {}
@@ -584,7 +583,7 @@ impl CommandExecutor {
                     block_time = block_time_string.parse::<u64>().unwrap();
                 }
                 commands.drain(2..4);
-                sleep(Duration::from_millis(block_time));
+                sleep(Duration::from_millis(block_time)).await;
             }
         }
 
