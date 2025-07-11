@@ -605,6 +605,7 @@ impl CommandExecutor {
             }
             i += 2;
         }
+
         let mut result_resp_string = format!("*{}\r\n", results.len());
         for (rk, rv) in results {
             result_resp_string.push_str("*2\r\n");
@@ -622,6 +623,12 @@ impl CommandExecutor {
                 );
             }
         }
+        stream
+            .lock()
+            .await
+            .write_all(result_resp_string.as_bytes())
+            .await
+            .unwrap();
     }
 
     async fn set_command(
