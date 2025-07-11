@@ -13,6 +13,7 @@ use tokio::time;
 use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 
 use core::num;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -82,6 +83,9 @@ impl CommandExecutor {
                 }
                 "WAIT" => {
                     self.wait(commands, writer, state).await;
+                }
+                "XADD" => {
+                    self.xadd(commands, writer, state).await;
                 }
                 _ => {}
             },
@@ -342,6 +346,45 @@ impl CommandExecutor {
         }
     }
 
+    fn populate_entries(&mut self, values: Vec<RespDataType>) -> HashMap<String, String> {
+        let mut res: HashMap<String, String> = HashMap::new();
+
+        let mut i = 0;
+        while i < values.len() {
+            let (key, value) = (&values[i], &values[i + 1]);
+
+            if let (RespDataType::BulkString(key), RespDataType::BulkString(value)) = (key, value) {
+                res.insert(key.clone(), value.clone());
+            }
+            i += 2;
+        }
+        res
+    }
+
+    async fn xadd(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
+    ) {
+        if let (RespDataType::BulkString(key), RespDataType::BulkString(id)) =
+            (commands[1].clone(), commands[2].clone())
+        {
+            let entry = self.populate_entries(commands[3..].to_vec());
+
+            let mut guard = state.lock().await;
+            let stream_data = &mut guard.stream_data;
+
+            stream_data.entry(key).or_insert_with(Vec::new).push(entry);
+            stream
+                .lock()
+                .await
+                .write_all(self.convert_bulk_string_to_resp(&id).as_bytes())
+                .await
+                .unwrap();
+        }
+    }
+
     async fn set_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
@@ -424,6 +467,11 @@ impl CommandExecutor {
         let guard = state.lock().await;
         let key = commands[1].clone();
         let value = guard.shared_data.get(&key).cloned();
+        let mut stream_value = None;
+
+        if let RespDataType::BulkString(key_as_string) = key {
+            stream_value = guard.stream_data.get(&key_as_string);
+        }
 
         match value {
             Some(v) => {
@@ -436,7 +484,10 @@ impl CommandExecutor {
 
                 return stream.lock().await.write_all(b"+string\r\n").await.unwrap();
             }
-            None => stream.lock().await.write_all(b"+none\r\n").await.unwrap(),
+            None => match stream_value {
+                Some(str_val) => stream.lock().await.write_all(b"+stream\r\n").await.unwrap(),
+                None => stream.lock().await.write_all(b"+none\r\n").await.unwrap(),
+            },
         }
     }
 

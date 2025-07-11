@@ -18,6 +18,7 @@ async fn main() {
     // bootstrap shared state
     let mut state = State {
         shared_data: HashMap::new(),
+        stream_data: HashMap::new(),
         db_dir: None,
         db_file_name: None,
         role: "master".to_string(),

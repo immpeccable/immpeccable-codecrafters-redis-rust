@@ -17,6 +17,7 @@ pub struct State {
     pub db_file_name: Option<String>,
     pub db_dir: Option<String>,
     pub shared_data: HashMap<RespDataType, ExpiringValue>,
+    pub stream_data: HashMap<String, Vec<HashMap<String, String>>>,
     pub role: String,
     pub master_host: Option<String>,
     pub master_port: Option<String>,
@@ -35,6 +36,7 @@ impl Clone for State {
             master_port: self.master_port.clone(),
             replicas: self.replicas.clone(),
             offset: self.offset,
+            stream_data: self.stream_data.clone(),
         }
     }
 }

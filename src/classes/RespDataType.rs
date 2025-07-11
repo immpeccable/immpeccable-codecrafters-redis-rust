@@ -5,6 +5,7 @@ pub enum RespDataType {
     Integer(i64),
     Array(Vec<RespDataType>),
     BulkString(String),
+    Stream(String),
     Nil,
     Boolean(bool),
     // Double(f32),
