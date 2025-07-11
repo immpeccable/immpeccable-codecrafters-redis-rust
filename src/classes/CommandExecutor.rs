@@ -90,6 +90,9 @@ impl CommandExecutor {
                 "XRANGE" => {
                     self.xrange(commands, writer, state).await;
                 }
+                "XREAD" => {
+                    self.xread(commands, writer, state).await;
+                }
                 _ => {}
             },
             _ => {}
@@ -550,6 +553,73 @@ impl CommandExecutor {
                 None => {
                     stream.lock().await.write_all(b"*0\r\n").await.unwrap();
                 }
+            }
+        }
+    }
+
+    async fn xread(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
+    ) {
+        let stream_keys_and_starts = &commands[2..];
+        let stream_state = &mut state.lock().await.stream_data;
+        let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        let mut i = 0;
+        while i < stream_keys_and_starts.len() {
+            if let (
+                RespDataType::BulkString(stream_key),
+                RespDataType::BulkString(exclusive_start),
+            ) = (
+                stream_keys_and_starts[i].clone(),
+                stream_keys_and_starts[i + 1].clone(),
+            ) {
+                let mut result_vector_for_stream: Vec<Vec<String>> = Vec::new();
+                let stream_vector = stream_state.get(&stream_key);
+                match stream_vector {
+                    Some(stream_vector) => {
+                        let mut valid_entries: Vec<&HashMap<String, String>> = Vec::new();
+                        for entry in stream_vector {
+                            if let Some(entry_id) = entry.get(&"id".to_string()) {
+                                if *entry_id > exclusive_start {
+                                    valid_entries.push(entry);
+                                }
+                            }
+                        }
+
+                        for entry in valid_entries {
+                            let mut result_vec_for_entry = Vec::new();
+                            for (key, value) in entry.into_iter() {
+                                if key != "id" {
+                                    result_vec_for_entry.push(key.clone());
+                                }
+                                result_vec_for_entry.push(value.clone());
+                            }
+                            result_vector_for_stream.push(result_vec_for_entry);
+                        }
+                    }
+                    None => {}
+                }
+                results.insert(stream_key.clone(), result_vector_for_stream);
+            }
+            i += 2;
+        }
+        let mut result_resp_string = format!("*{}\r\n", results.len());
+        for (rk, rv) in results {
+            result_resp_string.push_str("*2\r\n");
+            result_resp_string.push_str(&self.convert_bulk_string_to_resp(&rk));
+            result_resp_string.push_str(&format!("*{}\r\n", rv.len()));
+            for entry in rv {
+                result_resp_string.push_str(&self.convert_bulk_string_to_resp(&entry[0]));
+                result_resp_string.push_str(
+                    &&self.convert_array_to_resp(
+                        entry[1..]
+                            .iter()
+                            .map(|el| RespDataType::BulkString(el.clone()))
+                            .collect(),
+                    ),
+                );
             }
         }
     }
