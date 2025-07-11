@@ -511,7 +511,7 @@ impl CommandExecutor {
                         if let Some(entry_id) = entry.get(&"id".to_string()) {
                             println!("entry id: {} {} {}", entry_id, start, end);
                             if start <= *entry_id {
-                                if *entry_id <= end {
+                                if *entry_id <= end || end == "+" {
                                     println!("added");
                                     result.push(entry);
                                 } else {
