@@ -495,7 +495,9 @@ impl CommandExecutor {
 
             let stream_vector = stream_data.get(&key);
 
-            if !start.contains("-") {
+            if start == "-" {
+                start = "0-0".to_string();
+            } else if !start.contains("-") {
                 start.push_str("-0");
             }
             if !end.contains("-") {
@@ -508,13 +510,18 @@ impl CommandExecutor {
                     for entry in vec {
                         if let Some(entry_id) = entry.get(&"id".to_string()) {
                             println!("entry id: {} {} {}", entry_id, start, end);
-                            if start <= *entry_id && *entry_id <= end {
-                                result.push(entry);
+                            if start <= *entry_id {
+                                if *entry_id <= end {
+                                    println!("added");
+                                    result.push(entry);
+                                } else {
+                                    break;
+                                }
                             }
                         }
                     }
 
-                    let mut result_resp_string = String::from("*2\r\n");
+                    let mut result_resp_string = String::from(format!("*{}\r\n", result.len()));
                     for entry in result {
                         result_resp_string.push_str("*2\r\n");
                         let mut id = String::new();
