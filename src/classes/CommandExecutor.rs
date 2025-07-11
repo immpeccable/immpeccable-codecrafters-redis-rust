@@ -500,7 +500,7 @@ impl CommandExecutor {
             } else if !start.contains("-") {
                 start.push_str("-0");
             }
-            if !end.contains("-") {
+            if end != "+" && !end.contains("-") {
                 end.push_str("-0");
             }
 
