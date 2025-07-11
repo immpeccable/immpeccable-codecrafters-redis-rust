@@ -507,6 +507,7 @@ impl CommandExecutor {
                     let mut result: Vec<&HashMap<String, String>> = Vec::new();
                     for entry in vec {
                         if let Some(entry_id) = entry.get(&"id".to_string()) {
+                            println!("entry id: {} {} {}", entry_id, start, end);
                             if start <= *entry_id && *entry_id <= end {
                                 result.push(entry);
                             }
