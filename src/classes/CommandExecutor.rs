@@ -366,15 +366,18 @@ impl CommandExecutor {
     }
 
     fn generate_stream_id(&mut self, latest_id: Option<&String>, current_id: String) -> String {
-        let parts: Vec<&str> = current_id.split("-").collect();
-        let (miliseconds_time, sequence_number) = (parts[0], parts[1]);
-        if miliseconds_time == "*" && sequence_number == "*" {
+        if current_id == "*" {
             let start = SystemTime::now();
             let since_the_epoch = start
                 .duration_since(UNIX_EPOCH)
                 .expect("time should go forward");
             return format!("{}-{}", since_the_epoch.as_millis(), 0);
-        } else if sequence_number == "*" {
+        }
+
+        let parts: Vec<&str> = current_id.split("-").collect();
+        let (miliseconds_time, sequence_number) = (parts[0], parts[1]);
+
+        if sequence_number == "*" {
             match latest_id {
                 Some(latest_id) => {
                     let latest_id_parts: Vec<&str> = latest_id.split("-").collect();
@@ -398,9 +401,8 @@ impl CommandExecutor {
                     return format!("{}-{}", miliseconds_time, sequence_number);
                 }
             }
-        } else {
-            return current_id;
         }
+        return current_id;
     }
 
     async fn validate_stream_entry(
