@@ -577,30 +577,170 @@ impl CommandExecutor {
         stream: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
     ) {
-        let mut block_time = 0u64;
+        let mut block_time = None;
+        let mut has_block = false;
+        
+        // Check if BLOCK option is present
         if let RespDataType::BulkString(second_command) = &commands[1] {
             if second_command.to_uppercase() == "BLOCK" {
+                has_block = true;
                 if let RespDataType::BulkString(block_time_string) = &commands[2] {
-                    block_time = block_time_string.parse::<u64>().unwrap();
+                    let parsed_time = block_time_string.parse::<u64>().unwrap();
+                    if parsed_time == 0 {
+                        block_time = None; // Block indefinitely
+                    } else {
+                        block_time = Some(parsed_time);
+                    }
                 }
                 commands.drain(1..3);
-                sleep(Duration::from_millis(block_time)).await;
             }
         }
 
-        let stream_keys_and_starts = &commands[2..];
-        let stream_state = &mut state.lock().await.stream_data;
-        let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
-        let mut i = 0;
         let mut restructured_keys_and_starts = Vec::new();
+        let stream_keys_and_starts = &commands[2..];
         let half = stream_keys_and_starts.len() / 2;
 
         let mut j = 0;
         while j < half {
-            restructured_keys_and_starts.push(stream_keys_and_starts[j].clone());
-            restructured_keys_and_starts.push(stream_keys_and_starts[j + half].clone());
+            let stream_key = stream_keys_and_starts[j].clone();
+            restructured_keys_and_starts.push(stream_key.clone());
+            let exclusive_start_key = stream_keys_and_starts[j + half].clone();
+            if let RespDataType::BulkString(exc_start_key) = &exclusive_start_key {
+                if exc_start_key == "$" {
+                    if let RespDataType::BulkString(stream_key) = stream_key {
+                        let guard = state.lock().await;
+                        let stream = guard.stream_data.get(&stream_key);
+                        match stream {
+                            Some(v) => {
+                                if let Some(last_entry) = v.last() {
+                                    for (k, v) in last_entry {
+                                        if k == "id" {
+                                            restructured_keys_and_starts.push(RespDataType::BulkString(v.clone()));
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    restructured_keys_and_starts.push(RespDataType::BulkString(String::from("0-0")));
+                                }
+                            }
+                            None => {
+                                restructured_keys_and_starts.push(RespDataType::BulkString(String::from("0-0")));
+                            }
+                        }
+                    }
+                } else {
+                    restructured_keys_and_starts.push(exclusive_start_key);
+                }
+            }
             j += 1
         }
+
+        // If blocking, wait for new data
+        if has_block {
+            let deadline = if let Some(timeout) = block_time {
+                Some(Instant::now() + Duration::from_millis(timeout))
+            } else {
+                None
+            };
+
+            loop {
+                // Check if we have new data
+                let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+                let mut i = 0;
+                let stream_state = &state.lock().await.stream_data;
+
+                while i < restructured_keys_and_starts.len() {
+                    if let (
+                        RespDataType::BulkString(stream_key),
+                        RespDataType::BulkString(exclusive_start),
+                    ) = (
+                        restructured_keys_and_starts[i].clone(),
+                        restructured_keys_and_starts[i + 1].clone(),
+                    ) {
+                        let mut result_vector_for_stream: Vec<Vec<String>> = Vec::new();
+                        let stream_vector = stream_state.get(&stream_key);
+                        match stream_vector {
+                            Some(stream_vector) => {
+                                let mut valid_entries: Vec<&Vec<(String, String)>> = Vec::new();
+                                for entry in stream_vector {
+                                    let mut entry_id = None;
+                                    for (k, v) in entry {
+                                        if k == "id" {
+                                            entry_id = Some(v);
+                                            break;
+                                        }
+                                    }
+                                    if let Some(entry_id) = entry_id {
+                                        if entry_id.as_str() > exclusive_start.as_str() {
+                                            valid_entries.push(entry);
+                                        }
+                                    }
+                                }
+
+                                for entry in valid_entries {
+                                    let mut result_vec_for_entry = Vec::new();
+                                    for (key, value) in entry {
+                                        if key != "id" {
+                                            result_vec_for_entry.push(key.clone());
+                                        }
+                                        result_vec_for_entry.push(value.clone());
+                                    }
+                                    result_vector_for_stream.push(result_vec_for_entry);
+                                }
+                            }
+                            None => {}
+                        }
+                        if !result_vector_for_stream.is_empty() {
+                            results.insert(stream_key.clone(), result_vector_for_stream);
+                        }
+                    }
+                    i += 2;
+                }
+
+                // If we found data, return it
+                if !results.is_empty() {
+                    let mut result_resp_string = format!("*{}\r\n", results.len());
+                    for (rk, rv) in results {
+                        result_resp_string.push_str("*2\r\n");
+                        result_resp_string.push_str(&self.convert_bulk_string_to_resp(&rk));
+                        result_resp_string.push_str(&format!("*{}\r\n", rv.len()));
+                        for entry in rv {
+                            result_resp_string.push_str("*2\r\n");
+                            result_resp_string.push_str(&self.convert_bulk_string_to_resp(&entry[0]));
+                            result_resp_string.push_str(
+                                &&self.convert_array_to_resp(
+                                    entry[1..]
+                                        .iter()
+                                        .map(|el| RespDataType::BulkString(el.clone()))
+                                        .collect(),
+                                ),
+                            );
+                        }
+                    }
+                    return stream
+                        .lock()
+                        .await
+                        .write_all(result_resp_string.as_bytes())
+                        .await
+                        .unwrap();
+                }
+
+                // Check if we've timed out
+                if let Some(deadline) = deadline {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                }
+
+                // Wait a bit before checking again
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        // Non-blocking or timed out - check for existing data
+        let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        let mut i = 0;
+        let stream_state = &state.lock().await.stream_data;
 
         while i < restructured_keys_and_starts.len() {
             if let (
