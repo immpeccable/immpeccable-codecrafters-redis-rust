@@ -87,6 +87,9 @@ impl CommandExecutor {
                 "XADD" => {
                     self.xadd(commands, writer, state).await;
                 }
+                "XRANGE" => {
+                    self.xrange(commands, writer, state).await;
+                }
                 _ => {}
             },
             _ => {}
@@ -468,6 +471,81 @@ impl CommandExecutor {
                     .write_all(self.convert_bulk_string_to_resp(&current_id).as_bytes())
                     .await
                     .unwrap();
+            }
+        }
+    }
+
+    async fn xrange(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
+    ) {
+        if let (
+            RespDataType::BulkString(key),
+            RespDataType::BulkString(mut start),
+            RespDataType::BulkString(mut end),
+        ) = (
+            commands[1].clone(),
+            commands[2].clone(),
+            commands[3].clone(),
+        ) {
+            let mut guard = state.lock().await;
+            let stream_data = &mut guard.stream_data;
+
+            let stream_vector = stream_data.get(&key);
+
+            if !start.contains("-") {
+                start.push_str("-0");
+            }
+            if !end.contains("-") {
+                end.push_str("-0");
+            }
+
+            match stream_vector {
+                Some(vec) => {
+                    let mut result: Vec<&HashMap<String, String>> = Vec::new();
+                    for entry in vec {
+                        if let Some(entry_id) = entry.get(&"id".to_string()) {
+                            if start <= *entry_id {
+                                if *entry_id <= end {
+                                    result.push(entry);
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    let mut result_resp_string = String::from("*2\r\n");
+                    for entry in result {
+                        result_resp_string.push_str("*2\r\n");
+                        let mut id = String::new();
+                        let mut keys_values_except_id: Vec<RespDataType> = Vec::new();
+                        for (key, value) in entry.into_iter() {
+                            if key == "id" {
+                                id = value.clone();
+                            } else {
+                                keys_values_except_id
+                                    .push(RespDataType::BulkString(key.to_string()));
+                                keys_values_except_id
+                                    .push(RespDataType::BulkString(value.to_string()));
+                            }
+                        }
+                        result_resp_string.push_str(&self.convert_bulk_string_to_resp(&id));
+                        result_resp_string
+                            .push_str(&self.convert_array_to_resp(keys_values_except_id));
+                    }
+                    stream
+                        .lock()
+                        .await
+                        .write_all(result_resp_string.as_bytes())
+                        .await
+                        .unwrap();
+                }
+                None => {
+                    stream.lock().await.write_all(b"*0\r\n").await.unwrap();
+                }
             }
         }
     }
