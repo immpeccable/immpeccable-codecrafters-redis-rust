@@ -16,7 +16,7 @@ use core::num;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct CommandExecutor {}
 
@@ -369,7 +369,11 @@ impl CommandExecutor {
         let parts: Vec<&str> = current_id.split("-").collect();
         let (miliseconds_time, sequence_number) = (parts[0], parts[1]);
         if miliseconds_time == "*" && sequence_number == "*" {
-            return current_id;
+            let start = SystemTime::now();
+            let since_the_epoch = start
+                .duration_since(UNIX_EPOCH)
+                .expect("time should go forward");
+            return format!("{}-{}", since_the_epoch.as_millis(), 0);
         } else if sequence_number == "*" {
             match latest_id {
                 Some(latest_id) => {
