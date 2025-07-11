@@ -9,7 +9,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time;
+use tokio::time::{self, sleep};
 use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 
 use core::num;
@@ -577,6 +577,17 @@ impl CommandExecutor {
         stream: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
     ) {
+        let mut block_time = 0u64;
+        if let RespDataType::BulkString(second_command) = &commands[2] {
+            if second_command.to_uppercase() == "BLOCK" {
+                if let RespDataType::BulkString(block_time_string) = &commands[3] {
+                    block_time = block_time_string.parse::<u64>().unwrap();
+                }
+                commands.drain(2..4);
+                sleep(Duration::from_millis(block_time));
+            }
+        }
+
         let stream_keys_and_starts = &commands[2..];
         let stream_state = &mut state.lock().await.stream_data;
         let mut results: HashMap<String, Vec<Vec<String>>> = HashMap::new();
