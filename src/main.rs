@@ -131,7 +131,10 @@ async fn handle_command_loop(
                 if let RespDataType::Array(command_array) = commands {
                     if let RespDataType::BulkString(command_type) = &command_array[0] {
                         println!("command type: {:?}", command_type);
-                        if in_multi && command_type.to_uppercase() != "EXEC" {
+                        if in_multi
+                            && command_type.to_uppercase() != "EXEC"
+                            && command_type.to_uppercase() != "DISCARD"
+                        {
                             queued.push(command_array);
                             writer.lock().await.write_all(b"+QUEUED\r\n").await.unwrap();
                         } else if in_multi && command_type.to_uppercase() == "EXEC" {
@@ -146,7 +149,7 @@ async fn handle_command_loop(
                                 &mut in_multi,
                             )
                             .await;
-                            
+
                             for command in &mut queued {
                                 exec.execute(
                                     command.clone(),
