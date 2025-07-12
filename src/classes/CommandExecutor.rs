@@ -100,6 +100,9 @@ impl CommandExecutor {
                 "EXEC" => {
                     self.exec(commands, writer, queued, in_multi).await;
                 }
+                "DISCARD" => {
+                    self.discard(commands, writer, queued, in_multi).await;
+                }
                 _ => {}
             },
             _ => {}
@@ -114,6 +117,27 @@ impl CommandExecutor {
     ) {
         *in_multi = true;
         stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
+    }
+
+    async fn discard(
+        &mut self,
+        _commands: &mut Vec<RespDataType>,
+        writer: Arc<Mutex<OwnedWriteHalf>>,
+        queued: &mut Vec<Vec<RespDataType>>,
+        in_multi: &mut bool,
+    ) {
+        if *in_multi == false {
+            writer
+                .lock()
+                .await
+                .write_all(b"-ERR DISCARD without MULTI\r\n")
+                .await
+                .unwrap();
+        } else {
+            writer.lock().await.write_all(b"+OK\r\n").await.unwrap();
+            queued.clear();
+            *in_multi = false;
+        }
     }
 
     async fn exec(
