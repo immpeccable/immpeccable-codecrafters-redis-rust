@@ -156,6 +156,7 @@ async fn handle_command_loop(
                     }
                 }
             }
+            state.lock().await.offset += frame_bytes.len();
         }
     }
 }
