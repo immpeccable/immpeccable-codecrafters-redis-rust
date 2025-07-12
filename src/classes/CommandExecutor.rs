@@ -27,9 +27,14 @@ impl CommandExecutor {
         reader: Arc<Mutex<OwnedReadHalf>>,
         writer: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
+        queued: &mut Vec<Vec<RespDataType>>,
+        in_multi: &mut bool,
     ) {
         match commands {
-            RespDataType::Array(v) => self.handle_commands(v, reader, writer, state).await,
+            RespDataType::Array(v) => {
+                self.handle_commands(v, reader, writer, state, queued, in_multi)
+                    .await
+            }
             _ => unreachable!("shouldn't be else "),
         }
     }
@@ -40,6 +45,8 @@ impl CommandExecutor {
         reader: Arc<Mutex<OwnedReadHalf>>,
         mut writer: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
+        queued: &mut Vec<Vec<RespDataType>>,
+        in_multi: &mut bool,
     ) {
         let first_command = &commands[0];
         match first_command {
@@ -96,10 +103,63 @@ impl CommandExecutor {
                 "INCR" => {
                     self.incr(commands, writer, state).await;
                 }
+                "MULTI" => {
+                    self.multi(commands, writer, in_multi).await;
+                }
+                "EXEC" => {
+                    self.exec(commands, state, reader, writer, queued, in_multi)
+                        .await;
+                }
                 _ => {}
             },
             _ => {}
         }
+    }
+
+    async fn multi(
+        &mut self,
+        _commands: &mut Vec<RespDataType>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        in_multi: &mut bool,
+    ) {
+        *in_multi = true;
+        stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
+    }
+
+    async fn exec(
+        &mut self,
+        _commands: &mut Vec<RespDataType>,
+        state: Arc<Mutex<State>>,
+        reader: Arc<Mutex<OwnedReadHalf>>,
+        writer: Arc<Mutex<OwnedWriteHalf>>,
+        queued: &mut Vec<Vec<RespDataType>>,
+        in_multi: &mut bool,
+    ) {
+        if *in_multi == false {
+            writer
+                .lock()
+                .await
+                .write_all(b"-ERR EXEC without MULTI\r\n")
+                .await
+                .unwrap();
+        } else if queued.is_empty() {
+            writer.lock().await.write_all(b"*0\r\n").await.unwrap();
+        } else {
+            for mut command in queued.clone().into_iter() {
+                self.handle_commands(
+                    &mut command,
+                    reader.clone(),
+                    writer.clone(),
+                    state.clone(),
+                    &mut queued.clone(),
+                    in_multi,
+                )
+                .await;
+            }
+        }
+
+        *in_multi = false;
+        queued.clear();
     }
 
     async fn wait(

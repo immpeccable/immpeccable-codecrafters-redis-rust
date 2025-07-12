@@ -13,6 +13,8 @@ use tokio::{signal, task};
 mod classes;
 use classes::{CommandExecutor::CommandExecutor, Db::Db, Parser::Parser, State::State};
 
+use crate::classes::RespDataType::RespDataType;
+
 #[tokio::main]
 async fn main() {
     // bootstrap shared state
@@ -93,12 +95,32 @@ async fn main() {
 
 // common client‐handling loop (for master clients only)
 async fn handle_client(stream: TokioTcpStream, state: Arc<Mutex<State>>) {
-    let mut parser = Parser {};
-    let mut exec = CommandExecutor {};
-    let mut pending: Vec<u8> = Vec::new();
+    let pending: Vec<u8> = Vec::new();
     let (raw_reader, raw_writer) = stream.into_split();
     let writer = Arc::new(Mutex::new(raw_writer));
     let reader = Arc::new(Mutex::new(raw_reader));
+    handle_command_loop(state, reader, writer, pending).await;
+}
+
+async fn handle_replication_loop(
+    reader: Arc<Mutex<OwnedReadHalf>>,
+    writer: Arc<Mutex<OwnedWriteHalf>>,
+    mut state: Arc<Mutex<State>>,
+    mut remaining_data: Vec<u8>,
+) {
+    handle_command_loop(state, reader, writer, remaining_data).await;
+}
+
+async fn handle_command_loop(
+    state: Arc<Mutex<State>>,
+    reader: Arc<Mutex<OwnedReadHalf>>,
+    writer: Arc<Mutex<OwnedWriteHalf>>,
+    mut pending: Vec<u8>,
+) {
+    let mut parser = Parser {};
+    let mut exec = CommandExecutor {};
+    let mut queued: Vec<Vec<RespDataType>> = Vec::new();
+    let mut in_multi = false;
 
     loop {
         let mut buf = [0u8; 2048];
@@ -115,8 +137,15 @@ async fn handle_client(stream: TokioTcpStream, state: Arc<Mutex<State>>) {
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let mut commands = parser.parse(text);
-                exec.execute(&mut commands, reader.clone(), writer.clone(), state.clone())
-                    .await;
+                exec.execute(
+                    &mut commands,
+                    reader.clone(),
+                    writer.clone(),
+                    state.clone(),
+                    &mut queued,
+                    &mut in_multi,
+                )
+                .await;
             }
         }
     }
@@ -210,37 +239,6 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
 
     println!("pednign: {}", String::from_utf8_lossy(&pending));
     return pending;
-}
-
-async fn handle_replication_loop(
-    reader: Arc<Mutex<OwnedReadHalf>>,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
-    mut state: Arc<Mutex<State>>,
-    remaining_data: Vec<u8>,
-) {
-    let mut pending = remaining_data;
-    let mut parser = Parser {};
-    let mut exec = CommandExecutor {};
-
-    loop {
-        while let Some(frame_end) = find_complete_frame(&pending) {
-            let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
-            if let Ok(text) = std::str::from_utf8(&frame_bytes) {
-                let mut commands = parser.parse(text);
-                println!("text: {}", text);
-                exec.execute(&mut commands, reader.clone(), writer.clone(), state.clone())
-                    .await;
-                println!("frame end: {} {}", frame_end, frame_bytes.len());
-                state.lock().await.offset += frame_end;
-            }
-        }
-        let mut buf = [0u8; 512];
-        let n = match reader.lock().await.read(&mut buf).await {
-            Ok(n) => n,
-            Err(_err) => 0,
-        };
-        pending.extend_from_slice(&buf[..n]);
-    }
 }
 
 fn find_complete_frame(buf: &Vec<u8>) -> Option<usize> {
