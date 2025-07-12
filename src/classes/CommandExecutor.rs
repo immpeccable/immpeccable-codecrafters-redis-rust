@@ -93,6 +93,9 @@ impl CommandExecutor {
                 "XREAD" => {
                     self.xread(commands, writer, state).await;
                 }
+                "INCR" => {
+                    self.incr(commands, writer, state).await;
+                }
                 _ => {}
             },
             _ => {}
@@ -579,7 +582,7 @@ impl CommandExecutor {
     ) {
         let mut block_time = None;
         let mut has_block = false;
-        
+
         // Check if BLOCK option is present
         if let RespDataType::BulkString(second_command) = &commands[1] {
             if second_command.to_uppercase() == "BLOCK" {
@@ -615,16 +618,19 @@ impl CommandExecutor {
                                 if let Some(last_entry) = v.last() {
                                     for (k, v) in last_entry {
                                         if k == "id" {
-                                            restructured_keys_and_starts.push(RespDataType::BulkString(v.clone()));
+                                            restructured_keys_and_starts
+                                                .push(RespDataType::BulkString(v.clone()));
                                             break;
                                         }
                                     }
                                 } else {
-                                    restructured_keys_and_starts.push(RespDataType::BulkString(String::from("0-0")));
+                                    restructured_keys_and_starts
+                                        .push(RespDataType::BulkString(String::from("0-0")));
                                 }
                             }
                             None => {
-                                restructured_keys_and_starts.push(RespDataType::BulkString(String::from("0-0")));
+                                restructured_keys_and_starts
+                                    .push(RespDataType::BulkString(String::from("0-0")));
                             }
                         }
                     }
@@ -706,7 +712,8 @@ impl CommandExecutor {
                         result_resp_string.push_str(&format!("*{}\r\n", rv.len()));
                         for entry in rv {
                             result_resp_string.push_str("*2\r\n");
-                            result_resp_string.push_str(&self.convert_bulk_string_to_resp(&entry[0]));
+                            result_resp_string
+                                .push_str(&self.convert_bulk_string_to_resp(&entry[0]));
                             result_resp_string.push_str(
                                 &&self.convert_array_to_resp(
                                     entry[1..]
@@ -820,11 +827,43 @@ impl CommandExecutor {
             .unwrap();
     }
 
+    async fn propogate_to_replicas(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
+    ) {
+        let mut guard = state.lock().await;
+        let payload = self.convert_array_to_resp(commands.clone());
+
+        let clients = &mut guard.replicas;
+        println!(" client length: {}", clients.len());
+        let mut kept = Vec::new();
+        let payload_bytes = payload.as_bytes();
+        let number_of_bytes_broadcasted = payload_bytes.len();
+        for client in clients {
+            if client
+                .writer
+                .lock()
+                .await
+                .write_all(payload_bytes)
+                .await
+                .is_ok()
+            {
+                kept.push(client.clone());
+            }
+        }
+        if guard.role == "master" {
+            guard.offset += number_of_bytes_broadcasted;
+        }
+        guard.replicas = kept;
+    }
+
     async fn set_command(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        mut state: Arc<Mutex<State>>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
     ) {
         let (key, value) = (commands[1].clone(), commands[2].clone());
         let mut hashmap_value = ExpiringValue {
@@ -856,41 +895,74 @@ impl CommandExecutor {
                 _ => {}
             }
         }
-        println!("inserted hello wtf");
 
         guard.shared_data.insert(key, hashmap_value);
-
-        println!("after insert");
-
         if guard.role == "master" {
             stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
         }
+        drop(guard);
+        self.propogate_to_replicas(commands, stream, state).await;
+    }
 
-        println!("{} {}", guard.role, guard.replicas.len());
+    async fn incr(
+        &mut self,
+        commands: &mut Vec<RespDataType>,
+        mut stream: Arc<Mutex<OwnedWriteHalf>>,
+        mut state: Arc<Mutex<State>>,
+    ) {
+        let key = commands[1].clone();
+        let mut guard = state.lock().await;
 
-        let payload = self.convert_array_to_resp(commands.clone());
+        let shared_data = &mut guard.shared_data;
 
-        let clients = &mut guard.replicas;
-        println!(" client length: {}", clients.len());
-        let mut kept = Vec::new();
-        let payload_bytes = payload.as_bytes();
-        let number_of_bytes_broadcasted = payload_bytes.len();
-        for mut client in clients {
-            if client
-                .writer
-                .lock()
-                .await
-                .write_all(payload_bytes)
-                .await
-                .is_ok()
-            {
-                kept.push(client.clone());
+        match shared_data.get(&key) {
+            Some(v) => {
+                if let RespDataType::BulkString(value) = &v.value {
+                    match value.parse::<u64>() {
+                        Ok(numeric_value) => {
+                            shared_data.insert(
+                                key.clone(),
+                                ExpiringValue {
+                                    value: RespDataType::BulkString(
+                                        (numeric_value + 1).to_string(),
+                                    ),
+                                    expiration_timestamp: v.expiration_timestamp.clone(),
+                                },
+                            );
+                            stream
+                                .lock()
+                                .await
+                                .write_all(format!(":{}\r\n", numeric_value + 1).as_bytes())
+                                .await
+                                .unwrap();
+                        }
+                        Err(err) => {
+                            stream
+                                .lock()
+                                .await
+                                .write_all(b"-ERR value is not an integer or out of range\r\n")
+                                .await
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            None => {
+                shared_data.insert(
+                    key.clone(),
+                    ExpiringValue {
+                        value: RespDataType::BulkString("1".to_string()),
+                        expiration_timestamp: None,
+                    },
+                );
+                stream.lock().await.write_all(b":1\r\n").await.unwrap();
             }
         }
-        if guard.role == "master" {
-            guard.offset += number_of_bytes_broadcasted;
-        }
-        guard.replicas = kept;
+
+        drop(guard);
+
+        self.propogate_to_replicas(commands, stream, state.clone())
+            .await;
     }
 
     async fn type_command(
