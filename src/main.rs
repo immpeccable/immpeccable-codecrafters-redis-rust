@@ -123,26 +123,19 @@ async fn handle_command_loop(
     let mut in_multi = false;
 
     loop {
-        let mut buf = [0u8; 2048];
-
-        let n = match reader.lock().await.read(&mut buf).await {
-            Ok(0) | Err(_) => return, // connection closed or error
-            Ok(n) => n,
-        };
-
-        pending.extend_from_slice(&buf[..n]);
-
-        if let Some(frame_end) = find_complete_frame(&pending) {
+        while let Some(frame_end) = find_complete_frame(&pending) {
             let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let commands = parser.parse(text);
                 if let RespDataType::Array(command_array) = commands {
                     if let RespDataType::BulkString(command_type) = &command_array[0] {
+                        println!("command type: {:?}", command_type);
                         if in_multi && command_type.to_uppercase() != "EXEC" {
                             queued.push(command_array);
                             writer.lock().await.write_all(b"+QUEUED\r\n").await.unwrap();
                         } else {
+                            println!("executed");
                             exec.execute(
                                 command_array,
                                 reader.clone(),
@@ -155,9 +148,20 @@ async fn handle_command_loop(
                         }
                     }
                 }
+                if state.lock().await.role == "slave" {
+                    state.lock().await.offset += frame_bytes.len();
+                }
             }
-            state.lock().await.offset += frame_bytes.len();
         }
+
+        let mut buf = [0u8; 2048];
+
+        let n = match reader.lock().await.read(&mut buf).await {
+            Ok(0) | Err(_) => return, // connection closed or error
+            Ok(n) => n,
+        };
+
+        pending.extend_from_slice(&buf[..n]);
     }
 }
 
@@ -247,7 +251,6 @@ async fn do_replication_handshake(stream: &mut TokioTcpStream, port: &str) -> Ve
         }
     }
 
-    println!("pednign: {}", String::from_utf8_lossy(&pending));
     return pending;
 }
 

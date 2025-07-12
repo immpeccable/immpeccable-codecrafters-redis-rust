@@ -5,16 +5,11 @@ use crate::classes::{
 };
 
 use hex;
-use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::{self, sleep};
+use tokio::time::{self};
 use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf};
 
-use core::num;
-use std::collections::HashMap;
-use std::result;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -76,6 +71,7 @@ impl CommandExecutor {
                     self.info_command(commands, writer, state).await;
                 }
                 "REPLCONF" => {
+                    println!("replconf came");
                     self.repl_conf_command(commands, writer, state, reader)
                         .await;
                 }
@@ -258,15 +254,12 @@ impl CommandExecutor {
                     stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
                 }
                 "GETACK" => {
-                    println!("Master received GETACK command, responding with ACK");
                     let offset = state.lock().await.offset;
                     let response = format!(
                         "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
                         offset.to_string().len(),
                         offset
                     );
-                    println!("Sending ACK response: {}", response);
-                    println!("Response bytes: {:?}", response.as_bytes());
                     let mut writer = stream.lock().await;
                     let result = writer.write_all(response.as_bytes()).await;
                     match result {
@@ -310,6 +303,12 @@ impl CommandExecutor {
         mut writer: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
     ) {
+        println!("received psync command");
+        state.lock().await.replicas.push(Replica {
+            reader: reader.clone(),
+            writer: writer.clone(),
+            last_ack: 0,
+        });
         let header = format!("FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0");
         writer
             .lock()
@@ -327,11 +326,6 @@ impl CommandExecutor {
             .await
             .unwrap();
         writer.lock().await.write_all(&dump).await.unwrap();
-        state.lock().await.replicas.push(Replica {
-            reader: reader,
-            writer: writer,
-            last_ack: 0,
-        });
     }
 
     async fn ping_command(
@@ -518,12 +512,20 @@ impl CommandExecutor {
                 .await
             {
                 stream_data.entry(key).or_insert_with(Vec::new).push(entry);
-                stream
-                    .lock()
-                    .await
-                    .write_all(self.convert_bulk_string_to_resp(&current_id).as_bytes())
-                    .await
-                    .unwrap();
+                if guard.role == "master" {
+                    stream
+                        .lock()
+                        .await
+                        .write_all(self.convert_bulk_string_to_resp(&current_id).as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+            let role = guard.role.clone();
+            drop(guard);
+
+            if role == "master" {
+                self.propogate_to_replicas(commands, stream, state).await;
             }
         }
     }
@@ -893,6 +895,9 @@ impl CommandExecutor {
                 kept.push(client.clone());
             }
         }
+        if guard.role == "master" {
+            guard.offset += number_of_bytes_broadcasted;
+        }
         guard.replicas = kept;
     }
 
@@ -934,18 +939,22 @@ impl CommandExecutor {
         }
 
         guard.shared_data.insert(key, hashmap_value);
-        if guard.role == "master" {
+        let role = guard.role.clone();
+        drop(guard);
+        if role == "master" {
             stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
         }
-        drop(guard);
-        self.propogate_to_replicas(commands, stream, state).await;
+        if role == "master" {
+            self.propogate_to_replicas(commands, stream, state.clone())
+                .await;
+        }
     }
 
     async fn incr(
         &mut self,
         commands: &mut Vec<RespDataType>,
-        mut stream: Arc<Mutex<OwnedWriteHalf>>,
-        mut state: Arc<Mutex<State>>,
+        stream: Arc<Mutex<OwnedWriteHalf>>,
+        state: Arc<Mutex<State>>,
     ) {
         let key = commands[1].clone();
         let mut guard = state.lock().await;
@@ -995,11 +1004,12 @@ impl CommandExecutor {
                 stream.lock().await.write_all(b":1\r\n").await.unwrap();
             }
         }
-
+        let role = guard.role.clone();
         drop(guard);
-
-        self.propogate_to_replicas(commands, stream, state.clone())
-            .await;
+        if role == "master" {
+            self.propogate_to_replicas(commands, stream, state.clone())
+                .await;
+        }
     }
 
     async fn type_command(
