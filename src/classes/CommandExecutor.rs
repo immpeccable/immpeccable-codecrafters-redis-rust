@@ -130,12 +130,14 @@ impl CommandExecutor {
                 .write_all(b"-ERR EXEC without MULTI\r\n")
                 .await
                 .unwrap();
-        } else if queued.is_empty() {
-            writer.lock().await.write_all(b"*0\r\n").await.unwrap();
+        } else {
+            writer
+                .lock()
+                .await
+                .write_all(format!("*{}\r\n", queued.len()).as_bytes())
+                .await
+                .unwrap();
         }
-
-        *in_multi = false;
-        queued.clear();
     }
 
     async fn wait(
@@ -943,8 +945,6 @@ impl CommandExecutor {
         drop(guard);
         if role == "master" {
             stream.lock().await.write_all(b"+OK\r\n").await.unwrap();
-        }
-        if role == "master" {
             self.propogate_to_replicas(commands, stream, state.clone())
                 .await;
         }

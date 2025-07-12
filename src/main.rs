@@ -136,6 +136,17 @@ async fn handle_command_loop(
                             writer.lock().await.write_all(b"+QUEUED\r\n").await.unwrap();
                         } else if in_multi && command_type.to_uppercase() == "EXEC" {
                             let mut queued_clone = queued.clone();
+
+                            exec.execute(
+                                command_array,
+                                reader.clone(),
+                                writer.clone(),
+                                state.clone(),
+                                &mut queued,
+                                &mut in_multi,
+                            )
+                            .await;
+                            
                             for command in &mut queued {
                                 exec.execute(
                                     command.clone(),
@@ -147,15 +158,9 @@ async fn handle_command_loop(
                                 )
                                 .await;
                             }
-                            exec.execute(
-                                command_array,
-                                reader.clone(),
-                                writer.clone(),
-                                state.clone(),
-                                &mut queued,
-                                &mut in_multi,
-                            )
-                            .await;
+
+                            in_multi = false;
+                            queued.clear();
                         } else {
                             exec.execute(
                                 command_array,
