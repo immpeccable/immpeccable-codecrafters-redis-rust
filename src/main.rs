@@ -134,8 +134,29 @@ async fn handle_command_loop(
                         if in_multi && command_type.to_uppercase() != "EXEC" {
                             queued.push(command_array);
                             writer.lock().await.write_all(b"+QUEUED\r\n").await.unwrap();
+                        } else if in_multi && command_type.to_uppercase() == "EXEC" {
+                            let mut queued_clone = queued.clone();
+                            for command in &mut queued {
+                                exec.execute(
+                                    command.clone(),
+                                    reader.clone(),
+                                    writer.clone(),
+                                    state.clone(),
+                                    &mut queued_clone,
+                                    &mut in_multi,
+                                )
+                                .await;
+                            }
+                            exec.execute(
+                                command_array,
+                                reader.clone(),
+                                writer.clone(),
+                                state.clone(),
+                                &mut queued,
+                                &mut in_multi,
+                            )
+                            .await;
                         } else {
-                            println!("executed");
                             exec.execute(
                                 command_array,
                                 reader.clone(),
