@@ -893,9 +893,6 @@ impl CommandExecutor {
                 kept.push(client.clone());
             }
         }
-        if guard.role == "master" {
-            guard.offset += number_of_bytes_broadcasted;
-        }
         guard.replicas = kept;
     }
 
