@@ -136,16 +136,25 @@ async fn handle_command_loop(
             let frame_bytes: Vec<u8> = pending.drain(..frame_end).collect();
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
-                let mut commands = parser.parse(text);
-                exec.execute(
-                    &mut commands,
-                    reader.clone(),
-                    writer.clone(),
-                    state.clone(),
-                    &mut queued,
-                    &mut in_multi,
-                )
-                .await;
+                let commands = parser.parse(text);
+                if let RespDataType::Array(command_array) = commands {
+                    if let RespDataType::BulkString(command_type) = &command_array[0] {
+                        if in_multi && command_type.to_uppercase() != "EXEC" {
+                            queued.push(command_array);
+                            writer.lock().await.write_all(b"+QUEUED\r\n").await.unwrap();
+                        } else {
+                            exec.execute(
+                                command_array,
+                                reader.clone(),
+                                writer.clone(),
+                                state.clone(),
+                                &mut queued,
+                                &mut in_multi,
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
         }
     }

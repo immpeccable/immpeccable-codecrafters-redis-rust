@@ -23,20 +23,15 @@ pub struct CommandExecutor {}
 impl CommandExecutor {
     pub async fn execute(
         &mut self,
-        commands: &mut RespDataType,
+        mut commands: Vec<RespDataType>,
         reader: Arc<Mutex<OwnedReadHalf>>,
         writer: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
         queued: &mut Vec<Vec<RespDataType>>,
         in_multi: &mut bool,
     ) {
-        match commands {
-            RespDataType::Array(v) => {
-                self.handle_commands(v, reader, writer, state, queued, in_multi)
-                    .await
-            }
-            _ => unreachable!("shouldn't be else "),
-        }
+        self.handle_commands(&mut commands, reader, writer, state, queued, in_multi)
+            .await
     }
 
     async fn handle_commands(
@@ -107,8 +102,7 @@ impl CommandExecutor {
                     self.multi(commands, writer, in_multi).await;
                 }
                 "EXEC" => {
-                    self.exec(commands, state, reader, writer, queued, in_multi)
-                        .await;
+                    self.exec(commands, writer, queued, in_multi).await;
                 }
                 _ => {}
             },
@@ -129,8 +123,6 @@ impl CommandExecutor {
     async fn exec(
         &mut self,
         _commands: &mut Vec<RespDataType>,
-        state: Arc<Mutex<State>>,
-        reader: Arc<Mutex<OwnedReadHalf>>,
         writer: Arc<Mutex<OwnedWriteHalf>>,
         queued: &mut Vec<Vec<RespDataType>>,
         in_multi: &mut bool,
@@ -144,18 +136,6 @@ impl CommandExecutor {
                 .unwrap();
         } else if queued.is_empty() {
             writer.lock().await.write_all(b"*0\r\n").await.unwrap();
-        } else {
-            for mut command in queued.clone().into_iter() {
-                self.handle_commands(
-                    &mut command,
-                    reader.clone(),
-                    writer.clone(),
-                    state.clone(),
-                    &mut queued.clone(),
-                    in_multi,
-                )
-                .await;
-            }
         }
 
         *in_multi = false;
