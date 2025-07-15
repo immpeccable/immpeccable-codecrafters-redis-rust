@@ -1,7 +1,5 @@
 use std::{iter::Peekable, str::Chars};
 
-use crate::classes::RespDataType::RespDataType;
-
 pub struct Parser {}
 
 impl Parser {
@@ -19,20 +17,20 @@ impl Parser {
 
     fn read_n_characters(&mut self, chars: &mut Peekable<Chars<'_>>, n: u32) -> String {
         let mut res = String::new();
-        for i in 0..n {
+        for _i in 0..n {
             res.push(chars.next().unwrap());
         }
         return res;
     }
 
-    pub fn parse(&mut self, input: &str) -> RespDataType {
+    pub fn parse(&mut self, input: &str) -> Vec<String> {
         let mut chars = input.chars().peekable();
         let mut commands = Vec::new();
-        let mut command_size: u32 = 0;
+        
         while let Some(ch) = chars.next() {
             if ch == '*' {
                 let command_size_as_string = self.read_until_next_line(&mut chars);
-                command_size = command_size_as_string.parse::<u32>().unwrap();
+                let _command_size = command_size_as_string.parse::<u32>().unwrap();
             } else if ch == '$' {
                 let bulk_string_size_as_string = self.read_until_next_line(&mut chars);
                 let bulk_string_size = bulk_string_size_as_string.parse::<u32>().unwrap();
@@ -41,9 +39,9 @@ impl Parser {
                 let simple_string = self.read_n_characters(&mut chars, bulk_string_size);
                 chars.next();
                 chars.next();
-                commands.push(RespDataType::BulkString(simple_string));
+                commands.push(simple_string);
             }
         }
-        return RespDataType::Array(commands);
+        return commands;
     }
 }

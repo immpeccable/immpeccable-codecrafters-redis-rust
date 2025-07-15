@@ -5,3 +5,8 @@ pub mod Parser;
 pub mod RespDataType;
 pub mod State;
 pub mod Constants;
+pub mod string_commands;
+pub mod stream_commands;
+pub mod replication_commands;
+pub mod meta_commands;
+pub mod transaction_commands;

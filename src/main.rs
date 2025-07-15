@@ -119,7 +119,7 @@ async fn handle_command_loop(
 ) {
     let mut parser = Parser {};
     let mut exec = CommandExecutor {};
-    let mut queued: Vec<Vec<RespDataType>> = Vec::new();
+    let mut queued: Vec<Vec<String>> = Vec::new();
     let mut in_multi = false;
 
     loop {
@@ -128,53 +128,52 @@ async fn handle_command_loop(
 
             if let Ok(text) = std::str::from_utf8(&frame_bytes) {
                 let commands = parser.parse(text);
-                if let RespDataType::Array(command_array) = commands {
-                    if let RespDataType::BulkString(command_type) = &command_array[0] {
-                        println!("command type: {:?}", command_type);
-                        if in_multi
-                            && command_type.to_uppercase() != "EXEC"
-                            && command_type.to_uppercase() != "DISCARD"
-                        {
-                            queued.push(command_array);
-                            writer.lock().await.write_all(b"+QUEUED\r\n").await.unwrap();
-                        } else if in_multi && command_type.to_uppercase() == "EXEC" {
-                            let mut queued_clone = queued.clone();
+                if !commands.is_empty() {
+                    let command_type = &commands[0];
+                    println!("command type: {:?}", command_type);
+                    if in_multi
+                        && command_type.to_uppercase() != "EXEC"
+                        && command_type.to_uppercase() != "DISCARD"
+                    {
+                        queued.push(commands);
+                        writer.lock().await.write_all(RespDataType::SimpleString("QUEUED".to_string()).to_string().as_bytes()).await.unwrap();
+                    } else if in_multi && command_type.to_uppercase() == "EXEC" {
+                        let mut queued_clone = queued.clone();
 
+                        exec.execute(
+                            commands,
+                            reader.clone(),
+                            writer.clone(),
+                            state.clone(),
+                            &mut queued,
+                            &mut in_multi,
+                        )
+                        .await;
+
+                        for command in &mut queued {
                             exec.execute(
-                                command_array,
+                                command.clone(),
                                 reader.clone(),
                                 writer.clone(),
                                 state.clone(),
-                                &mut queued,
-                                &mut in_multi,
-                            )
-                            .await;
-
-                            for command in &mut queued {
-                                exec.execute(
-                                    command.clone(),
-                                    reader.clone(),
-                                    writer.clone(),
-                                    state.clone(),
-                                    &mut queued_clone,
-                                    &mut in_multi,
-                                )
-                                .await;
-                            }
-
-                            in_multi = false;
-                            queued.clear();
-                        } else {
-                            exec.execute(
-                                command_array,
-                                reader.clone(),
-                                writer.clone(),
-                                state.clone(),
-                                &mut queued,
+                                &mut queued_clone,
                                 &mut in_multi,
                             )
                             .await;
                         }
+
+                        in_multi = false;
+                        queued.clear();
+                    } else {
+                        exec.execute(
+                            commands,
+                            reader.clone(),
+                            writer.clone(),
+                            state.clone(),
+                            &mut queued,
+                            &mut in_multi,
+                        )
+                        .await;
                     }
                 }
                 if state.lock().await.role == "slave" {
