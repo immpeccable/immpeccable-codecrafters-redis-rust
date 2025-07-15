@@ -5,6 +5,7 @@ use tokio::{
     sync::Mutex,
 };
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use crate::classes::ExpiringValue::ExpiringValue;
 
@@ -121,12 +122,18 @@ impl Clone for Config {
     }
 }
 
+pub struct BlockedBlpopClient {
+    pub writer: Arc<Mutex<OwnedWriteHalf>>,
+    pub start_time: Instant,
+    pub timeout: f64, // in seconds
+}
+
 // Main state structure that holds separate locked components
 pub struct State {
     pub data: Arc<Mutex<DataStorage>>,
     pub replication: Arc<Mutex<ReplicationState>>,
     pub config: Arc<Mutex<Config>>,
-    pub blocked_blpop_clients: Arc<Mutex<std::collections::HashMap<String, VecDeque<Arc<Mutex<OwnedWriteHalf>>>>>>,
+    pub blocked_blpop_clients: Arc<Mutex<std::collections::HashMap<String, VecDeque<BlockedBlpopClient>>>>,
 }
 
 impl Clone for State {
@@ -395,19 +402,28 @@ impl State {
 
     pub async fn register_blpop_blocked_client(&self, key: &str, writer: Arc<Mutex<OwnedWriteHalf>>) {
         let mut blocked = self.blocked_blpop_clients.lock().await;
-        blocked.entry(key.to_string()).or_default().push_back(writer);
+        blocked.entry(key.to_string()).or_default().push_back(BlockedBlpopClient {
+            writer,
+            start_time: Instant::now(),
+            timeout: 30.0, // Default timeout
+        });
     }
 
     pub async fn wake_blpop_blocked_client(&self, key: &str, value: String) -> bool {
         let mut blocked = self.blocked_blpop_clients.lock().await;
         if let Some(queue) = blocked.get_mut(key) {
-            if let Some(writer) = queue.pop_front() {
+            if let Some(client) = queue.pop_front() {
+                // Check if the client has timed out
+                if client.start_time.elapsed().as_secs_f64() > client.timeout {
+                    // If timed out, remove the client and return false
+                    return false;
+                }
                 // Compose the response: [key, value]
                 let resp = crate::classes::RespDataType::RespDataType::Array(vec![
                     crate::classes::RespDataType::RespDataType::BulkString(key.to_string()),
                     crate::classes::RespDataType::RespDataType::BulkString(value),
                 ]);
-                let _ = writer.lock().await.write_all(resp.to_string().as_bytes()).await;
+                let _ = client.writer.lock().await.write_all(resp.to_string().as_bytes()).await;
                 return true;
             }
         }
