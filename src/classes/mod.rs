@@ -10,3 +10,4 @@ pub mod stream_commands;
 pub mod replication_commands;
 pub mod meta_commands;
 pub mod transaction_commands;
+pub mod list_commands;

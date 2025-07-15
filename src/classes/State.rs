@@ -18,8 +18,8 @@ pub struct Replica {
 pub enum Value {
     String(String),
     Stream(Vec<Vec<(String, String)>>),
+    List(Vec<String>),
     // Future data types can be added here:
-    // List(Vec<String>),
     // Set(HashSet<String>),
     // Hash(HashMap<String, String>),
     // SortedSet(Vec<(String, f64)>),
@@ -30,6 +30,7 @@ impl Value {
         match self {
             Value::String(_) => "string",
             Value::Stream(_) => "stream",
+            Value::List(_) => "list",
         }
     }
 
@@ -43,6 +44,20 @@ impl Value {
     pub fn as_stream(&self) -> Option<&Vec<Vec<(String, String)>>> {
         match self {
             Value::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_list(&self) -> Option<&Vec<String>> {
+        match self {
+            Value::List(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    pub fn as_list_mut(&mut self) -> Option<&mut Vec<String>> {
+        match self {
+            Value::List(l) => Some(l),
             _ => None,
         }
     }
@@ -220,6 +235,43 @@ impl State {
             expiration_timestamp: None, // Streams don't expire
         };
         self.set_value(key, expiring_value).await;
+    }
+
+    pub async fn get_list(&self, key: &str) -> Option<Vec<String>> {
+        if let Some(expiring_value) = self.get_value(key).await {
+            if let Value::List(l) = expiring_value.value {
+                return Some(l);
+            }
+        }
+        None
+    }
+
+    pub async fn set_list(&self, key: String, value: Vec<String>) {
+        let expiring_value = ExpiringValue {
+            value: Value::List(value),
+            expiration_timestamp: None, // Lists don't expire for now
+        };
+        self.set_value(key, expiring_value).await;
+    }
+
+    pub async fn rpush(&self, key: String, element: String) -> usize {
+        let mut data = self.data.lock().await;
+        
+        if let Some(expiring_value) = data.data.get_mut(&key) {
+            if let Value::List(list) = &mut expiring_value.value {
+                list.push(element);
+                return list.len();
+            }
+        }
+        
+        // Key doesn't exist or is not a list, create new list
+        let new_list = vec![element];
+        data.data.insert(key, ExpiringValue {
+            value: Value::List(new_list.clone()),
+            expiration_timestamp: None,
+        });
+        
+        new_list.len()
     }
 
     pub async fn get_type(&self, key: &str) -> &'static str {
