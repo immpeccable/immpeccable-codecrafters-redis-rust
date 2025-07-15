@@ -99,3 +99,23 @@ pub async fn handle_lpush(
         .await
         .unwrap();
 }
+
+pub async fn handle_llen(
+    commands: &mut Vec<String>,
+    stream: Arc<Mutex<OwnedWriteHalf>>,
+    state: Arc<Mutex<State>>,
+) {
+    if commands.len() != 2 {
+        stream.lock().await
+            .write_all(RespDataType::SimpleError("ERR wrong number of arguments for LLEN command".to_string()).to_string().as_bytes())
+            .await
+            .unwrap();
+        return;
+    }
+    let key = &commands[1];
+    let len = state.lock().await.llen(key).await;
+    stream.lock().await
+        .write_all(RespDataType::Integer(len as i64).to_string().as_bytes())
+        .await
+        .unwrap();
+}

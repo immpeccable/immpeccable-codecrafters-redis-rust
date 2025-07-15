@@ -335,6 +335,14 @@ impl State {
         new_list.len()
     }
 
+    pub async fn llen(&self, key: &str) -> usize {
+        if let Some(list) = self.get_list(key).await {
+            list.len()
+        } else {
+            0
+        }
+    }
+
     pub async fn get_type(&self, key: &str) -> &'static str {
         if let Some(expiring_value) = self.get_value(key).await {
             return expiring_value.value.get_type();
