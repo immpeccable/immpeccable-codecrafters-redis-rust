@@ -14,7 +14,7 @@ use crate::classes::stream_commands::{handle_xadd, handle_xrange, handle_xread};
 use crate::classes::replication_commands::{handle_psync, handle_replconf, handle_wait};
 use crate::classes::meta_commands::{handle_info, handle_config_get, handle_keys, handle_echo, handle_ping};
 use crate::classes::transaction_commands::{handle_multi, handle_exec, handle_discard};
-use crate::classes::list_commands::{handle_rpush};
+use crate::classes::list_commands::{handle_rpush, handle_lrange};
 
 pub struct CommandExecutor {}
 
@@ -125,6 +125,9 @@ impl CommandExecutor {
                     if role == "master" {
                         self.propogate_to_replicas(commands, writer.clone(), state.clone()).await;
                     }
+                }
+                "LRANGE" => {
+                    handle_lrange(commands, writer.clone(), state.clone()).await;
                 }
                 _ => {
                     // Handle unimplemented commands with an error response

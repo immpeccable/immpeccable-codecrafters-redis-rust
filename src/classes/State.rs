@@ -275,6 +275,26 @@ impl State {
         elements.len()
     }
 
+    pub async fn lrange(&self, key: &str, start: i64, stop: i64) -> Vec<String> {
+        if let Some(list) = self.get_list(key).await {
+            let len = list.len() as i64;
+            
+            // Handle edge cases
+            if start >= len || start > stop {
+                return Vec::new();
+            }
+            
+            let start_idx = start as usize;
+            let stop_idx = if stop >= len { len - 1 } else { stop } as usize;
+            
+            // Extract the range (inclusive)
+            list[start_idx..=stop_idx].to_vec()
+        } else {
+            // List doesn't exist, return empty array
+            Vec::new()
+        }
+    }
+
     pub async fn get_type(&self, key: &str) -> &'static str {
         if let Some(expiring_value) = self.get_value(key).await {
             return expiring_value.value.get_type();
