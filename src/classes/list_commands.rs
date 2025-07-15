@@ -75,3 +75,27 @@ pub async fn handle_lrange(
         .await
         .unwrap();
 }
+
+pub async fn handle_lpush(
+    commands: &mut Vec<String>,
+    stream: Arc<Mutex<OwnedWriteHalf>>,
+    state: Arc<Mutex<State>>,
+) {
+    if commands.len() < 3 {
+        stream.lock().await
+            .write_all(RespDataType::SimpleError("ERR wrong number of arguments for LPUSH command".to_string()).to_string().as_bytes())
+            .await
+            .unwrap();
+        return;
+    }
+
+    let key = &commands[1];
+    let elements: Vec<String> = commands[2..].to_vec();
+    
+    let list_length = state.lock().await.lpush(key.clone(), elements).await;
+    
+    stream.lock().await
+        .write_all(RespDataType::Integer(list_length as i64).to_string().as_bytes())
+        .await
+        .unwrap();
+}

@@ -307,6 +307,34 @@ impl State {
         }
     }
 
+    pub async fn lpush(&self, key: String, elements: Vec<String>) -> usize {
+        let mut data = self.data.lock().await;
+        
+        if let Some(expiring_value) = data.data.get_mut(&key) {
+            if let Value::List(list) = &mut expiring_value.value {
+                // Prepend elements in the order they appear in the command
+                for element in elements.iter() {
+                    list.insert(0, element.clone());
+                }
+                return list.len();
+            }
+        }
+        
+        // Key doesn't exist or is not a list, create new list
+        // For LPUSH, we insert elements in the order they appear in the command
+        let mut new_list = Vec::new();
+        for element in elements.iter() {
+            new_list.insert(0, element.clone());
+        }
+        
+        data.data.insert(key, ExpiringValue {
+            value: Value::List(new_list.clone()),
+            expiration_timestamp: None,
+        });
+        
+        new_list.len()
+    }
+
     pub async fn get_type(&self, key: &str) -> &'static str {
         if let Some(expiring_value) = self.get_value(key).await {
             return expiring_value.value.get_type();
