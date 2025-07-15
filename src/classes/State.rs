@@ -343,6 +343,20 @@ impl State {
         }
     }
 
+    pub async fn lpop(&self, key: &str) -> Option<String> {
+        let mut data = self.data.lock().await;
+        
+        if let Some(expiring_value) = data.data.get_mut(key) {
+            if let Value::List(list) = &mut expiring_value.value {
+                if !list.is_empty() {
+                    return Some(list.remove(0));
+                }
+            }
+        }
+        
+        None
+    }
+
     pub async fn get_type(&self, key: &str) -> &'static str {
         if let Some(expiring_value) = self.get_value(key).await {
             return expiring_value.value.get_type();
