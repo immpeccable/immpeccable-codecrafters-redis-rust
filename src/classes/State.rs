@@ -1,8 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
+    io::AsyncWriteExt,
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
     sync::Mutex,
 };
+use std::collections::VecDeque;
 
 use crate::classes::ExpiringValue::ExpiringValue;
 
@@ -124,6 +126,7 @@ pub struct State {
     pub data: Arc<Mutex<DataStorage>>,
     pub replication: Arc<Mutex<ReplicationState>>,
     pub config: Arc<Mutex<Config>>,
+    pub blocked_blpop_clients: Arc<Mutex<std::collections::HashMap<String, VecDeque<Arc<Mutex<OwnedWriteHalf>>>>>>,
 }
 
 impl Clone for State {
@@ -132,6 +135,7 @@ impl Clone for State {
             data: self.data.clone(),
             replication: self.replication.clone(),
             config: self.config.clone(),
+            blocked_blpop_clients: self.blocked_blpop_clients.clone(),
         }
     }
 }
@@ -139,13 +143,8 @@ impl Clone for State {
 impl State {
     pub fn new() -> State {
         State {
-            data: Arc::new(Mutex::new(DataStorage {
-                data: HashMap::new(),
-            })),
-            replication: Arc::new(Mutex::new(ReplicationState {
-                replicas: Vec::new(),
-                offset: 0,
-            })),
+            data: Arc::new(Mutex::new(DataStorage { data: std::collections::HashMap::new() })),
+            replication: Arc::new(Mutex::new(ReplicationState { replicas: vec![], offset: 0 })),
             config: Arc::new(Mutex::new(Config {
                 db_file_name: None,
                 db_dir: None,
@@ -153,6 +152,7 @@ impl State {
                 master_host: None,
                 master_port: None,
             })),
+            blocked_blpop_clients: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -391,5 +391,26 @@ impl State {
         let mut config = self.config.lock().await;
         config.db_dir = db_dir;
         config.db_file_name = db_file_name;
+    }
+
+    pub async fn register_blpop_blocked_client(&self, key: &str, writer: Arc<Mutex<OwnedWriteHalf>>) {
+        let mut blocked = self.blocked_blpop_clients.lock().await;
+        blocked.entry(key.to_string()).or_default().push_back(writer);
+    }
+
+    pub async fn wake_blpop_blocked_client(&self, key: &str, value: String) -> bool {
+        let mut blocked = self.blocked_blpop_clients.lock().await;
+        if let Some(queue) = blocked.get_mut(key) {
+            if let Some(writer) = queue.pop_front() {
+                // Compose the response: [key, value]
+                let resp = crate::classes::RespDataType::RespDataType::Array(vec![
+                    crate::classes::RespDataType::RespDataType::BulkString(key.to_string()),
+                    crate::classes::RespDataType::RespDataType::BulkString(value),
+                ]);
+                let _ = writer.lock().await.write_all(resp.to_string().as_bytes()).await;
+                return true;
+            }
+        }
+        false
     }
 }

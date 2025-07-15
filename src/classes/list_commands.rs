@@ -171,3 +171,44 @@ pub async fn handle_lpop(
         }
     }
 }
+
+pub async fn handle_blpop(
+    commands: &mut Vec<String>,
+    stream: Arc<Mutex<OwnedWriteHalf>>,
+    state: Arc<Mutex<State>>,
+) {
+    if commands.len() != 3 {
+        stream.lock().await
+            .write_all(RespDataType::SimpleError("ERR wrong number of arguments for BLPOP command".to_string()).to_string().as_bytes())
+            .await
+            .unwrap();
+        return;
+    }
+    let key = &commands[1];
+    let timeout = &commands[2];
+    if timeout != "0" {
+        stream.lock().await
+            .write_all(RespDataType::SimpleError("ERR only timeout=0 (block forever) is supported in this stage".to_string()).to_string().as_bytes())
+            .await
+            .unwrap();
+        return;
+    }
+    // Try to pop immediately
+    let popped = state.lock().await.lpop(key).await;
+    match popped {
+        Some(element) => {
+            let resp = RespDataType::Array(vec![
+                RespDataType::BulkString(key.clone()),
+                RespDataType::BulkString(element),
+            ]);
+            stream.lock().await
+                .write_all(resp.to_string().as_bytes())
+                .await
+                .unwrap();
+        }
+        None => {
+            // Register as blocked
+            state.lock().await.register_blpop_blocked_client(key, stream.clone()).await;
+        }
+    }
+}
