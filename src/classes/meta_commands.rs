@@ -73,20 +73,14 @@ pub async fn handle_keys(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
-    let shared_data = state.lock().await.get_shared_data().await;
-    let matching_keys = {
-        let regex_match = &commands[1];
-        let mut keys: Vec<String> = Vec::new();
-        for key in shared_data.keys() {
-            if let RespDataType::BulkString(key) = key {
-                let parts: Vec<&str> = regex_match.split("*").collect();
-                if key.starts_with(parts[0]) && key.ends_with(parts[1]) {
-                    keys.push(key.clone());
-                }
-            }
-        }
-        keys
-    };
+    let all_keys = state.lock().await.get_all_keys().await;
+    let regex_match = &commands[1];
+    let matching_keys: Vec<String> = all_keys.into_iter()
+        .filter(|key| {
+            let parts: Vec<&str> = regex_match.split("*").collect();
+            key.starts_with(parts[0]) && key.ends_with(parts[1])
+        })
+        .collect();
 
     let mut result = String::from(format!("*{}\r\n", matching_keys.len()));
     for mk in matching_keys {

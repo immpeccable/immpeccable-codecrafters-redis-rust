@@ -1,11 +1,11 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Error, Read, Seek, Write},
+    io::{BufRead, BufReader, Error, Read},
     path::Path,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::classes::{ExpiringValue::ExpiringValue, RespDataType::RespDataType, State::State};
+use crate::classes::State::State;
 
 pub struct Db {}
 impl Db {
@@ -92,13 +92,7 @@ impl Db {
                     0x00 => {
                         let hash_key = self.string_encoded(&mut reader);
                         let hash_value = self.string_encoded(&mut reader);
-                        state.insert_shared_data(
-                            RespDataType::BulkString(hash_key),
-                            ExpiringValue {
-                                value: RespDataType::BulkString(hash_value),
-                                expiration_timestamp: None,
-                            },
-                        ).await;
+                        state.set_string(hash_key, hash_value, None).await;
                     }
                     0xFC => {
                         let mut expiration_as_miliseconds_bytes = [0u8; 8];
@@ -111,14 +105,10 @@ impl Db {
                         let hash_value = self.string_encoded(&mut reader);
                         let expiration_time = UNIX_EPOCH + Duration::from_millis(ms);
                         
-                        state.insert_shared_data(
-                            RespDataType::BulkString(hash_key),
-                            ExpiringValue {
-                                value: RespDataType::BulkString(hash_value),
-                                expiration_timestamp: Some(Instant::from(
-                                    self.system_time_to_instant(expiration_time),
-                                )),
-                            },
+                        state.set_string(
+                            hash_key,
+                            hash_value,
+                            Some(Instant::from(self.system_time_to_instant(expiration_time))),
                         ).await;
                     }
                     0xFD => {
@@ -130,14 +120,10 @@ impl Db {
                         let hash_value = self.string_encoded(&mut reader);
                         let expiration_time = UNIX_EPOCH + Duration::from_secs(seconds.into());
 
-                        state.insert_shared_data(
-                            RespDataType::BulkString(hash_key),
-                            ExpiringValue {
-                                value: RespDataType::BulkString(hash_value),
-                                expiration_timestamp: Some(Instant::from(
-                                    self.system_time_to_instant(expiration_time),
-                                )),
-                            },
+                        state.set_string(
+                            hash_key,
+                            hash_value,
+                            Some(Instant::from(self.system_time_to_instant(expiration_time))),
                         ).await;
                     }
                     _ => {}

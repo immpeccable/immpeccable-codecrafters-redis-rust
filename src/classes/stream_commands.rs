@@ -55,6 +55,7 @@ fn generate_stream_id(latest_id: Option<&String>, current_id: String) -> String 
             }
         }
     }
+
     return current_id;
 }
 
@@ -96,10 +97,9 @@ pub async fn handle_xadd(
         let mut current_id = commands[2].clone();
         let state_guard = state.lock().await;
         
-        let stream_data = state_guard.get_stream_data().await;
-        let stream_vector = stream_data.get(&key);
+        let stream_data = state_guard.get_stream(&key).await;
         let mut latest_entry_id = None;
-        if let Some(stream_vector) = stream_vector {
+        if let Some(stream_vector) = &stream_data {
             if let Some(last_entry) = stream_vector.last() {
                 for (k, v) in last_entry {
                     if k == "id" {
@@ -113,11 +113,12 @@ pub async fn handle_xadd(
         let entry = populate_entries(commands[3..].to_vec(), &current_id);
         
         if validate_stream_entry(stream.clone(), latest_entry_id, current_id.clone()).await {
-            let mut new_stream_data = stream_data.clone();
-            new_stream_data.entry(key.clone()).or_insert_with(Vec::new).push(entry);
-            state_guard.insert_stream_data(key.clone(), new_stream_data.get(&key).unwrap().clone()).await;
+            let mut new_stream_data = stream_data.unwrap_or_default();
+            new_stream_data.push(entry);
+            drop(state_guard);
+            state.lock().await.set_stream(key, new_stream_data).await;
             
-            let role = state_guard.get_role().await;
+            let role = state.lock().await.get_role().await;
             if role == "master" {
                 stream
                     .lock()
@@ -141,8 +142,7 @@ pub async fn handle_xrange(
         let mut end = commands[3].clone();
         let state_guard = state.lock().await;
         
-        let stream_data = state_guard.get_stream_data().await;
-        let stream_vector = stream_data.get(&key);
+        let stream_data = state_guard.get_stream(&key).await;
         
         if start == "-" {
             start = "0-0".to_string();
@@ -153,10 +153,10 @@ pub async fn handle_xrange(
             end.push_str("-0");
         }
         
-        match stream_vector {
+        match stream_data {
             Some(vec) => {
                 let mut result: Vec<&Vec<(String, String)>> = Vec::new();
-                for entry in vec {
+                for entry in &vec {
                     let mut entry_id = None;
                     for (k, v) in entry {
                         if k == "id" {
@@ -270,9 +270,8 @@ pub async fn handle_xread(
         restructured_keys_and_starts.push(stream_key.clone());
         let exclusive_start_key = stream_keys_and_starts[j + half].clone();
         if exclusive_start_key == "$" {
-            let stream_data = state.lock().await.get_stream_data().await;
-            let stream = stream_data.get(&stream_key);
-            match stream {
+            let stream_data = state.lock().await.get_stream(&stream_key).await;
+            match stream_data {
                 Some(v) => {
                     if let Some(last_entry) = v.last() {
                         for (k, v) in last_entry {
@@ -297,23 +296,26 @@ pub async fn handle_xread(
     
     if has_block {
         let deadline = if let Some(timeout) = block_time {
-            Some(Instant::now() + Duration::from_millis(timeout))
+            if timeout == 0 {
+                None // Infinite block
+            } else {
+                Some(Instant::now() + Duration::from_millis(timeout))
+            }
         } else {
             None
         };
         loop {
             let mut results: Vec<(String, Vec<Vec<String>>)> = Vec::new();
             let mut i = 0;
-            let stream_data = state.lock().await.get_stream_data().await;
             while i < restructured_keys_and_starts.len() {
                 let stream_key = restructured_keys_and_starts[i].clone();
                 let exclusive_start = restructured_keys_and_starts[i + 1].clone();
                 let mut result_vector_for_stream: Vec<Vec<String>> = Vec::new();
-                let stream_vector = stream_data.get(&stream_key);
+                let stream_vector = state.lock().await.get_stream(&stream_key).await;
                 match stream_vector {
                     Some(stream_vector) => {
                         let mut valid_entries: Vec<&Vec<(String, String)>> = Vec::new();
-                        for entry in stream_vector {
+                        for entry in &stream_vector {
                             let mut entry_id = None;
                             for (k, v) in entry {
                                 if k == "id" {
@@ -371,20 +373,21 @@ pub async fn handle_xread(
             }
             time::sleep(Duration::from_millis(10)).await;
         }
+        // If we get here, it means we timed out (not BLOCK 0)
+        return stream.lock().await.write_all(RespDataType::Nil.to_string().as_bytes()).await.unwrap();
     }
     
     let mut results: Vec<(String, Vec<Vec<String>>)> = Vec::new();
     let mut i = 0;
-    let stream_data = state.lock().await.get_stream_data().await;
     while i < restructured_keys_and_starts.len() {
         let stream_key = restructured_keys_and_starts[i].clone();
         let exclusive_start = restructured_keys_and_starts[i + 1].clone();
         let mut result_vector_for_stream: Vec<Vec<String>> = Vec::new();
-        let stream_vector = stream_data.get(&stream_key);
+        let stream_vector = state.lock().await.get_stream(&stream_key).await;
         match stream_vector {
             Some(stream_vector) => {
                 let mut valid_entries: Vec<&Vec<(String, String)>> = Vec::new();
-                for entry in stream_vector {
+                for entry in &stream_vector {
                     let mut entry_id = None;
                     for (k, v) in entry {
                         if k == "id" {

@@ -112,7 +112,7 @@ impl CommandExecutor {
                     handle_multi(commands, writer.clone(), in_multi).await;
                 }
                 "EXEC" => {
-                    handle_exec(commands, writer.clone(), queued, in_multi).await;
+                    handle_exec(commands, writer.clone(), queued, in_multi, state.clone()).await;
                 }
                 "DISCARD" => {
                     handle_discard(commands, writer.clone(), queued, in_multi).await;

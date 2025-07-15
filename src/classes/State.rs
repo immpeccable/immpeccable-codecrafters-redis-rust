@@ -4,7 +4,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::classes::{ExpiringValue::ExpiringValue, RespDataType::RespDataType};
+use crate::classes::ExpiringValue::ExpiringValue;
 
 #[derive(Clone)]
 pub struct Replica {
@@ -13,17 +13,57 @@ pub struct Replica {
     pub last_ack: u64,
 }
 
-// Separate data storage with its own lock
+// Unified value representation for all Redis data types
+#[derive(Clone)]
+pub enum Value {
+    String(String),
+    Stream(Vec<Vec<(String, String)>>),
+    // Future data types can be added here:
+    // List(Vec<String>),
+    // Set(HashSet<String>),
+    // Hash(HashMap<String, String>),
+    // SortedSet(Vec<(String, f64)>),
+}
+
+impl Value {
+    pub fn get_type(&self) -> &'static str {
+        match self {
+            Value::String(_) => "string",
+            Value::Stream(_) => "stream",
+        }
+    }
+
+    pub fn as_string(&self) -> Option<&String> {
+        match self {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_stream(&self) -> Option<&Vec<Vec<(String, String)>>> {
+        match self {
+            Value::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_stream_mut(&mut self) -> Option<&mut Vec<Vec<(String, String)>>> {
+        match self {
+            Value::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+// Unified data storage with proper typing
 pub struct DataStorage {
-    pub shared_data: HashMap<RespDataType, ExpiringValue>,
-    pub stream_data: HashMap<String, Vec<Vec<(String, String)>>>,
+    pub data: HashMap<String, ExpiringValue<Value>>,
 }
 
 impl Clone for DataStorage {
     fn clone(&self) -> DataStorage {
         DataStorage {
-            shared_data: self.shared_data.clone(),
-            stream_data: self.stream_data.clone(),
+            data: self.data.clone(),
         }
     }
 }
@@ -85,8 +125,7 @@ impl State {
     pub fn new() -> State {
         State {
             data: Arc::new(Mutex::new(DataStorage {
-                shared_data: HashMap::new(),
-                stream_data: HashMap::new(),
+                data: HashMap::new(),
             })),
             replication: Arc::new(Mutex::new(ReplicationState {
                 replicas: Vec::new(),
@@ -137,28 +176,61 @@ impl State {
         }
     }
 
-    pub async fn get_shared_data(&self) -> HashMap<RespDataType, ExpiringValue> {
-        self.data.lock().await.shared_data.clone()
+    // Unified data access methods
+    pub async fn get_value(&self, key: &str) -> Option<ExpiringValue<Value>> {
+        self.data.lock().await.data.get(key).cloned()
     }
 
-    pub async fn insert_shared_data(&self, key: RespDataType, value: ExpiringValue) {
-        self.data.lock().await.shared_data.insert(key, value);
+    pub async fn set_value(&self, key: String, value: ExpiringValue<Value>) {
+        self.data.lock().await.data.insert(key, value);
     }
 
-    pub async fn get_shared_value(&self, key: &RespDataType) -> Option<ExpiringValue> {
-        self.data.lock().await.shared_data.get(key).cloned()
+    pub async fn get_string(&self, key: &str) -> Option<ExpiringValue<String>> {
+        if let Some(expiring_value) = self.get_value(key).await {
+            if let Value::String(s) = expiring_value.value {
+                return Some(ExpiringValue {
+                    value: s,
+                    expiration_timestamp: expiring_value.expiration_timestamp,
+                });
+            }
+        }
+        None
     }
 
-    pub async fn get_stream_data(&self) -> HashMap<String, Vec<Vec<(String, String)>>> {
-        self.data.lock().await.stream_data.clone()
+    pub async fn set_string(&self, key: String, value: String, expiration: Option<std::time::Instant>) {
+        let expiring_value = ExpiringValue {
+            value: Value::String(value),
+            expiration_timestamp: expiration,
+        };
+        self.set_value(key, expiring_value).await;
     }
 
-    pub async fn insert_stream_data(&self, key: String, value: Vec<Vec<(String, String)>>) {
-        self.data.lock().await.stream_data.insert(key, value);
+    pub async fn get_stream(&self, key: &str) -> Option<Vec<Vec<(String, String)>>> {
+        if let Some(expiring_value) = self.get_value(key).await {
+            if let Value::Stream(s) = expiring_value.value {
+                return Some(s);
+            }
+        }
+        None
     }
 
-    pub async fn get_stream_value(&self, key: &String) -> Option<Vec<Vec<(String, String)>>> {
-        self.data.lock().await.stream_data.get(key).cloned()
+    pub async fn set_stream(&self, key: String, value: Vec<Vec<(String, String)>>) {
+        let expiring_value = ExpiringValue {
+            value: Value::Stream(value),
+            expiration_timestamp: None, // Streams don't expire
+        };
+        self.set_value(key, expiring_value).await;
+    }
+
+    pub async fn get_type(&self, key: &str) -> &'static str {
+        if let Some(expiring_value) = self.get_value(key).await {
+            return expiring_value.value.get_type();
+        }
+        "none"
+    }
+
+    pub async fn get_all_keys(&self) -> Vec<String> {
+        self.data.lock().await.data.keys().cloned().collect()
     }
 
     pub async fn get_db_config(&self) -> (Option<String>, Option<String>) {
