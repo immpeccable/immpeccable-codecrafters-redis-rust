@@ -12,11 +12,13 @@ pub async fn handle_psync(
     state: Arc<Mutex<State>>,
 ) {
     println!("received psync command");
-    state.lock().await.replicas.push(Replica {
+    let replica = Replica {
         reader: reader.clone(),
         writer: writer.clone(),
         last_ack: 0,
-    });
+    };
+    state.lock().await.add_replica(replica).await;
+    
     let header = format!("FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0");
     writer
         .lock()
@@ -52,7 +54,7 @@ pub async fn handle_replconf(
                 stream.lock().await.write_all(RespDataType::SimpleString("OK".to_string()).to_string().as_bytes()).await.unwrap();
             }
             "GETACK" => {
-                let offset = state.lock().await.offset;
+                let offset = state.lock().await.get_offset().await;
                 let response = format!(
                     "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
                     offset.to_string().len(),
@@ -77,15 +79,7 @@ pub async fn handle_replconf(
                     if let Ok(offset) = offset_str.parse::<u64>() {
                         println!("Received ACK with offset: {}", offset);
                         // Find the replica that sent this ACK and update its last_ack
-                        let mut guard = state.lock().await;
-                        for replica in &mut guard.replicas {
-                            // Match by reader connection to identify which replica sent this ACK
-                            if Arc::ptr_eq(&replica.reader, &reader) {
-                                replica.last_ack = offset;
-                                println!("Updated replica last_ack to: {}", offset);
-                                break;
-                            }
-                        }
+                        state.lock().await.update_replica_ack(reader, offset).await;
                     }
                 }
             }
@@ -102,10 +96,10 @@ pub async fn handle_wait(
     let num = commands.get(1).and_then(|bs| bs.parse::<usize>().ok()).unwrap_or(0);
     let timeout_ms = commands.get(2).and_then(|bs| bs.parse::<u64>().ok()).unwrap_or(0);
 
-    let target = state.lock().await.offset;
+    let target = state.lock().await.get_offset().await;
     if target == 0 {
         // If no commands have been sent, all replicas are considered caught up
-        let num_replicas = state.lock().await.replicas.len();
+        let num_replicas = state.lock().await.get_replicas().await.len();
         let mut w = writer.lock().await;
         w.write_all(format!(":{}\r\n", num_replicas).as_bytes())
             .await
@@ -121,8 +115,8 @@ pub async fn handle_wait(
         if !getack_sent {
             let mut replicas_to_check = Vec::new();
             {
-                let guard = state.lock().await;
-                for replica in &guard.replicas {
+                let replicas = state.lock().await.get_replicas().await;
+                for replica in &replicas {
                     if replica.last_ack < target.try_into().unwrap() {
                         // Clone the writer to send GETACK outside the lock
                         replicas_to_check.push(replica.writer.clone());
@@ -146,8 +140,8 @@ pub async fn handle_wait(
 
         let mut acks = 0;
         {
-            let guard = state.lock().await;
-            for replica in &guard.replicas {
+            let replicas = state.lock().await.get_replicas().await;
+            for replica in &replicas {
                 if replica.last_ack >= target.try_into().unwrap() {
                     acks += 1;
                 }

@@ -21,8 +21,6 @@ pub async fn handle_set(
         options = Some(&commands[3..]);
     }
 
-    let mut guard = state.lock().await;
-
     if let Some(op) = options {
         let option_type = &op[0];
 
@@ -38,9 +36,8 @@ pub async fn handle_set(
         }
     }
 
-    guard.shared_data.insert(key, hashmap_value);
-    let role = guard.role.clone();
-    drop(guard);
+    state.lock().await.insert_shared_data(key, hashmap_value).await;
+    let role = state.lock().await.get_role().await;
     if role == "master" {
         stream.lock().await.write_all(RespDataType::SimpleString("OK".to_string()).to_string().as_bytes()).await.unwrap();
         // Note: propagation to replicas should be handled in the dispatcher for now
@@ -52,9 +49,8 @@ pub async fn handle_get(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
-    let guard = state.lock().await;
     let key = RespDataType::BulkString(commands[1].clone());
-    let value = guard.shared_data.get(&key).cloned();
+    let value = state.lock().await.get_shared_value(&key).await;
 
     match value {
         Some(v) => {
@@ -84,22 +80,20 @@ pub async fn handle_incr(
     state: Arc<Mutex<State>>,
 ) {
     let key = RespDataType::BulkString(commands[1].clone());
-    let mut guard = state.lock().await;
-
-    let shared_data = &mut guard.shared_data;
-
-    match shared_data.get(&key) {
+    let state_guard = state.lock().await;
+    
+    let current_value = state_guard.get_shared_value(&key).await;
+    
+    match current_value {
         Some(v) => {
             if let RespDataType::BulkString(value) = &v.value {
                 match value.parse::<u64>() {
                     Ok(numeric_value) => {
-                        shared_data.insert(
-                            key.clone(),
-                            ExpiringValue {
-                                value: RespDataType::BulkString((numeric_value + 1).to_string()),
-                                expiration_timestamp: v.expiration_timestamp.clone(),
-                            },
-                        );
+                        let new_value = ExpiringValue {
+                            value: RespDataType::BulkString((numeric_value + 1).to_string()),
+                            expiration_timestamp: v.expiration_timestamp.clone(),
+                        };
+                        state_guard.insert_shared_data(key.clone(), new_value).await;
                         stream
                             .lock()
                             .await
@@ -119,18 +113,16 @@ pub async fn handle_incr(
             }
         }
         None => {
-            shared_data.insert(
-                key.clone(),
-                ExpiringValue {
-                    value: RespDataType::BulkString("1".to_string()),
-                    expiration_timestamp: None,
-                },
-            );
+            let new_value = ExpiringValue {
+                value: RespDataType::BulkString("1".to_string()),
+                expiration_timestamp: None,
+            };
+            state_guard.insert_shared_data(key.clone(), new_value).await;
             stream.lock().await.write_all(RespDataType::Integer(1).to_string().as_bytes()).await.unwrap();
         }
     }
-    let role = guard.role.clone();
-    drop(guard);
+    let role = state_guard.get_role().await;
+    drop(state_guard);
     if role == "master" {
         // Note: propagation to replicas should be handled in the dispatcher for now
     }
@@ -141,11 +133,12 @@ pub async fn handle_type(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
-    let guard = state.lock().await;
     let key = RespDataType::BulkString(commands[1].clone());
-    let value = guard.shared_data.get(&key).cloned();
     let key_as_string = commands[1].clone();
-    let stream_value = guard.stream_data.get(&key_as_string);
+    let state_guard = state.lock().await;
+    
+    let value = state_guard.get_shared_value(&key).await;
+    let stream_value = state_guard.get_stream_value(&key_as_string).await;
 
     match value {
         Some(v) => {

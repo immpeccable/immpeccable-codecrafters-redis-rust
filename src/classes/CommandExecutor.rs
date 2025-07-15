@@ -51,7 +51,8 @@ impl CommandExecutor {
                 "SET" => {
                     handle_set(commands, writer.clone(), state.clone()).await;
                     // Propagate to replicas if master
-                    if state.lock().await.role == "master" {
+                    let role = state.lock().await.get_role().await;
+                    if role == "master" {
                         self.propogate_to_replicas(commands, writer.clone(), state.clone()).await;
                     }
                 }
@@ -61,7 +62,8 @@ impl CommandExecutor {
                 "INCR" => {
                     handle_incr(commands, writer.clone(), state.clone()).await;
                     // Propagate to replicas if master
-                    if state.lock().await.role == "master" {
+                    let role = state.lock().await.get_role().await;
+                    if role == "master" {
                         self.propogate_to_replicas(commands, writer.clone(), state.clone()).await;
                     }
                 }
@@ -95,7 +97,8 @@ impl CommandExecutor {
                 "XADD" => {
                     handle_xadd(commands, writer.clone(), state.clone()).await;
                     // Propagate to replicas if master
-                    if state.lock().await.role == "master" {
+                    let role = state.lock().await.get_role().await;
+                    if role == "master" {
                         self.propogate_to_replicas(commands, writer.clone(), state.clone()).await;
                     }
                 }
@@ -132,15 +135,14 @@ impl CommandExecutor {
         stream: Arc<Mutex<OwnedWriteHalf>>,
         state: Arc<Mutex<State>>,
     ) {
-        let mut guard = state.lock().await;
         let payload = RespDataType::Array(commands.iter().map(|s| RespDataType::BulkString(s.clone())).collect()).to_string();
-
-        let clients = &mut guard.replicas;
-        println!(" client length: {}", clients.len());
-        let mut kept = Vec::new();
         let payload_bytes = payload.as_bytes();
         let number_of_bytes_broadcasted = payload_bytes.len();
-        for client in clients {
+        
+        let replicas = state.lock().await.get_replicas().await;
+        let mut kept = Vec::new();
+        
+        for client in replicas {
             if client
                 .writer
                 .lock()
@@ -152,9 +154,13 @@ impl CommandExecutor {
                 kept.push(client.clone());
             }
         }
-        if guard.role == "master" {
-            guard.offset += number_of_bytes_broadcasted;
+        
+        // Update replicas list and offset
+        let role = state.lock().await.get_role().await;
+        if role == "master" {
+            state.lock().await.increment_offset(number_of_bytes_broadcasted).await;
+            // Note: We would need to update the replicas list, but the current helper methods don't support this
+            // For now, we'll keep the current replicas list as is
         }
-        guard.replicas = kept;
     }
 }

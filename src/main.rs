@@ -17,18 +17,8 @@ use crate::classes::RespDataType::RespDataType;
 
 #[tokio::main]
 async fn main() {
-    // bootstrap shared state
-    let mut state = State {
-        shared_data: HashMap::new(),
-        stream_data: HashMap::new(),
-        db_dir: None,
-        db_file_name: None,
-        role: "master".to_string(),
-        master_host: None,
-        master_port: None,
-        replicas: Vec::new(),
-        offset: 0,
-    };
+    // bootstrap shared state using the new State structure
+    let mut state = State::new();
 
     // parse args into a map
     let mut args_map = HashMap::new();
@@ -40,9 +30,11 @@ async fn main() {
     }
 
     // optional RDB load
-    state.db_dir = args_map.get("--dir").cloned();
-    state.db_file_name = args_map.get("--dbfilename").cloned();
-    if state.db_dir.is_some() && state.db_file_name.is_some() {
+    let db_dir = args_map.get("--dir").cloned();
+    let db_file_name = args_map.get("--dbfilename").cloned();
+    state.set_db_config(db_dir.clone(), db_file_name.clone()).await;
+    
+    if db_dir.is_some() && db_file_name.is_some() {
         let _ = Db {}.load(&mut state).await;
     }
 
@@ -60,10 +52,9 @@ async fn main() {
         let host = parts.next().expect("`--replicaof` requires `host port`");
         let master_port = parts.next().expect("`--replicaof` requires `host port`");
         let state_inside_replica = shared_state.clone();
-        let mut guard = state_inside_replica.lock().await;
-        guard.role = "slave".to_string();
-        guard.master_host = Some(host.to_string());
-        guard.master_port = Some(master_port.to_string());
+        state_inside_replica.lock().await.set_role("slave".to_string()).await;
+        // Note: master_host and master_port are not used in the current implementation
+        // but we could add them to the Config if needed
 
         let mut master_stream = TokioTcpStream::connect(format!("{}:{}", host, master_port))
             .await
@@ -176,8 +167,8 @@ async fn handle_command_loop(
                         .await;
                     }
                 }
-                if state.lock().await.role == "slave" {
-                    state.lock().await.offset += frame_bytes.len();
+                if state.lock().await.get_role().await == "slave" {
+                    state.lock().await.increment_offset(frame_bytes.len()).await;
                 }
             }
         }

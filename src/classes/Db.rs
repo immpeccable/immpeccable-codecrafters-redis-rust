@@ -74,7 +74,8 @@ impl Db {
     }
 
     pub async fn load(&mut self, state: &mut State) -> Result<(), Error> {
-        if let (Some(db_dir), Some(db_file)) = (state.db_dir.clone(), state.db_file_name.clone()) {
+        let (db_dir, db_file) = state.get_db_config().await;
+        if let (Some(db_dir), Some(db_file)) = (db_dir, db_file) {
             let file = File::open(&Path::new(format!("{}/{}", db_dir, db_file).as_str()))?;
             let mut reader = BufReader::new(file);
             let mut _discard = Vec::new();
@@ -91,13 +92,13 @@ impl Db {
                     0x00 => {
                         let hash_key = self.string_encoded(&mut reader);
                         let hash_value = self.string_encoded(&mut reader);
-                        state.shared_data.insert(
+                        state.insert_shared_data(
                             RespDataType::BulkString(hash_key),
                             ExpiringValue {
                                 value: RespDataType::BulkString(hash_value),
                                 expiration_timestamp: None,
                             },
-                        );
+                        ).await;
                     }
                     0xFC => {
                         let mut expiration_as_miliseconds_bytes = [0u8; 8];
@@ -109,8 +110,8 @@ impl Db {
                         let hash_key = self.string_encoded(&mut reader);
                         let hash_value = self.string_encoded(&mut reader);
                         let expiration_time = UNIX_EPOCH + Duration::from_millis(ms);
-                        let state_guard = &mut state.shared_data;
-                        state_guard.insert(
+                        
+                        state.insert_shared_data(
                             RespDataType::BulkString(hash_key),
                             ExpiringValue {
                                 value: RespDataType::BulkString(hash_value),
@@ -118,7 +119,7 @@ impl Db {
                                     self.system_time_to_instant(expiration_time),
                                 )),
                             },
-                        );
+                        ).await;
                     }
                     0xFD => {
                         let mut expiration_as_seconds_bytes = [0u8; 4];
@@ -129,7 +130,7 @@ impl Db {
                         let hash_value = self.string_encoded(&mut reader);
                         let expiration_time = UNIX_EPOCH + Duration::from_secs(seconds.into());
 
-                        state.shared_data.insert(
+                        state.insert_shared_data(
                             RespDataType::BulkString(hash_key),
                             ExpiringValue {
                                 value: RespDataType::BulkString(hash_value),
@@ -137,7 +138,7 @@ impl Db {
                                     self.system_time_to_instant(expiration_time),
                                 )),
                             },
-                        );
+                        ).await;
                     }
                     _ => {}
                 }

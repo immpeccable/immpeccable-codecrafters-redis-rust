@@ -9,9 +9,10 @@ pub async fn handle_info(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
+    let role = state.lock().await.get_role().await;
     stream.lock().await
         .write_all(
-            &RespDataType::BulkString(String::from(format!("role:{}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb", state.lock().await.role))).to_string().as_bytes(),
+            &RespDataType::BulkString(String::from(format!("role:{}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb", role))).to_string().as_bytes(),
         )
         .await
         .unwrap();
@@ -23,9 +24,11 @@ pub async fn handle_config_get(
     state: Arc<Mutex<State>>,
 ) {
     if let Some(config_key) = commands.get(2) {
+        let (db_dir, db_file_name) = state.lock().await.get_db_config().await;
+        
         match config_key.to_uppercase().as_str() {
             "DIR" => {
-                if let Some(db_dir) = &mut state.lock().await.db_dir {
+                if let Some(db_dir) = db_dir {
                     let response = format!(
                         "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
                         config_key.len(),
@@ -42,7 +45,7 @@ pub async fn handle_config_get(
                 }
             }
             "DBFILENAME" => {
-                if let Some(db_file_name) = &mut state.lock().await.db_file_name {
+                if let Some(db_file_name) = db_file_name {
                     let response = format!(
                         "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
                         config_key.len(),
@@ -70,11 +73,11 @@ pub async fn handle_keys(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
-    let guard = state.lock().await;
+    let shared_data = state.lock().await.get_shared_data().await;
     let matching_keys = {
         let regex_match = &commands[1];
         let mut keys: Vec<String> = Vec::new();
-        for key in guard.shared_data.keys() {
+        for key in shared_data.keys() {
             if let RespDataType::BulkString(key) = key {
                 let parts: Vec<&str> = regex_match.split("*").collect();
                 if key.starts_with(parts[0]) && key.ends_with(parts[1]) {
@@ -116,7 +119,8 @@ pub async fn handle_ping(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
-    if state.lock().await.role == "master" {
+    let role = state.lock().await.get_role().await;
+    if role == "master" {
         stream.lock().await.write_all(RespDataType::SimpleString("PONG".to_string()).to_string().as_bytes()).await.unwrap();
     }
 } 
