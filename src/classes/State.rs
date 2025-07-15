@@ -279,13 +279,25 @@ impl State {
         if let Some(list) = self.get_list(key).await {
             let len = list.len() as i64;
             
+            // Convert negative indexes to positive
+            let start_idx = if start < 0 {
+                let positive_start = len + start;
+                if positive_start < 0 { 0 } else { positive_start as usize }
+            } else {
+                start as usize
+            };
+            
+            let stop_idx = if stop < 0 {
+                let positive_stop = len + stop;
+                if positive_stop < 0 { 0 } else { positive_stop as usize }
+            } else {
+                if stop >= len { (len - 1) as usize } else { stop as usize }
+            };
+            
             // Handle edge cases
-            if start >= len || start > stop {
+            if start_idx >= list.len() || start_idx > stop_idx {
                 return Vec::new();
             }
-            
-            let start_idx = start as usize;
-            let stop_idx = if stop >= len { len - 1 } else { stop } as usize;
             
             // Extract the range (inclusive)
             list[start_idx..=stop_idx].to_vec()
