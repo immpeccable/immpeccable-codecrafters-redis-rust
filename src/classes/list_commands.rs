@@ -18,9 +18,9 @@ pub async fn handle_rpush(
     }
 
     let key = &commands[1];
-    let element = &commands[2];
+    let elements: Vec<String> = commands[2..].to_vec();
     
-    let list_length = state.lock().await.rpush(key.clone(), element.clone()).await;
+    let list_length = state.lock().await.rpush(key.clone(), elements).await;
     
     stream.lock().await
         .write_all(RespDataType::Integer(list_length as i64).to_string().as_bytes())

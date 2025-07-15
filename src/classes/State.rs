@@ -254,24 +254,25 @@ impl State {
         self.set_value(key, expiring_value).await;
     }
 
-    pub async fn rpush(&self, key: String, element: String) -> usize {
+    
+
+    pub async fn rpush(&self, key: String, elements: Vec<String>) -> usize {
         let mut data = self.data.lock().await;
         
         if let Some(expiring_value) = data.data.get_mut(&key) {
             if let Value::List(list) = &mut expiring_value.value {
-                list.push(element);
+                list.extend(elements);
                 return list.len();
             }
         }
         
         // Key doesn't exist or is not a list, create new list
-        let new_list = vec![element];
         data.data.insert(key, ExpiringValue {
-            value: Value::List(new_list.clone()),
+            value: Value::List(elements.clone()),
             expiration_timestamp: None,
         });
         
-        new_list.len()
+        elements.len()
     }
 
     pub async fn get_type(&self, key: &str) -> &'static str {
