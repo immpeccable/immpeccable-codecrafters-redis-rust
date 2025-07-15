@@ -125,7 +125,7 @@ pub async fn handle_lpop(
     stream: Arc<Mutex<OwnedWriteHalf>>,
     state: Arc<Mutex<State>>,
 ) {
-    if commands.len() != 2 {
+    if commands.len() < 2 || commands.len() > 3 {
         stream.lock().await
             .write_all(RespDataType::SimpleError("ERR wrong number of arguments for LPOP command".to_string()).to_string().as_bytes())
             .await
@@ -134,20 +134,40 @@ pub async fn handle_lpop(
     }
 
     let key = &commands[1];
-    let popped_element = state.lock().await.lpop(key).await;
-    
-    match popped_element {
-        Some(element) => {
-            stream.lock().await
-                .write_all(RespDataType::BulkString(element).to_string().as_bytes())
-                .await
-                .unwrap();
-        }
-        None => {
-            stream.lock().await
-                .write_all(RespDataType::Nil.to_string().as_bytes())
-                .await
-                .unwrap();
+    if commands.len() == 3 {
+        // LPOP key count
+        let count = match commands[2].parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                stream.lock().await
+                    .write_all(RespDataType::SimpleError("ERR value is not an integer or out of range".to_string()).to_string().as_bytes())
+                    .await
+                    .unwrap();
+                return;
+            }
+        };
+        let popped = state.lock().await.lpop_multiple(key, count).await;
+        let resp = RespDataType::Array(popped.into_iter().map(RespDataType::BulkString).collect());
+        stream.lock().await
+            .write_all(resp.to_string().as_bytes())
+            .await
+            .unwrap();
+    } else {
+        // LPOP key
+        let popped_element = state.lock().await.lpop(key).await;
+        match popped_element {
+            Some(element) => {
+                stream.lock().await
+                    .write_all(RespDataType::BulkString(element).to_string().as_bytes())
+                    .await
+                    .unwrap();
+            }
+            None => {
+                stream.lock().await
+                    .write_all(RespDataType::Nil.to_string().as_bytes())
+                    .await
+                    .unwrap();
+            }
         }
     }
 }

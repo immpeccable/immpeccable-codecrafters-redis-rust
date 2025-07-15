@@ -357,6 +357,20 @@ impl State {
         None
     }
 
+    pub async fn lpop_multiple(&self, key: &str, count: usize) -> Vec<String> {
+        let mut data = self.data.lock().await;
+        let mut result = Vec::new();
+        if let Some(expiring_value) = data.data.get_mut(key) {
+            if let Value::List(list) = &mut expiring_value.value {
+                let n = count.min(list.len());
+                for _ in 0..n {
+                    result.push(list.remove(0));
+                }
+            }
+        }
+        result
+    }
+
     pub async fn get_type(&self, key: &str) -> &'static str {
         if let Some(expiring_value) = self.get_value(key).await {
             return expiring_value.value.get_type();
